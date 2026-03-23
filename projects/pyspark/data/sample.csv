@@ -1,0 +1,8 @@
+Customer,name,ordersummary,TotalAmount
+C001,John Doe,Order-001,100.50
+C001,John Doe,Order-002,200.75
+C002,Jane Smith,Order-003,150.00
+C002,Jane Smith,Order-005,50.50
+C003,Bob Johnson,Order-004,300.25
+C004,Alice Williams,Order-006,75.00
+C005,Charlie Brown,Order-007,125.50
