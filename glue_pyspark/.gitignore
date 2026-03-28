@@ -20,7 +20,7 @@ wheels/
 .installed.cfg
 *.egg
 
-# Virtual Environment
+# Virtual environments
 venv/
 ENV/
 env/
@@ -39,13 +39,11 @@ htmlcov/
 .tox/
 
 # AWS
-.aws/
-*.pem
+.aws-sam/
 
 # Logs
 *.log
 
-# Spark
-spark-warehouse/
-metastore_db/
-derby.log
+# OS
+.DS_Store
+Thumbs.db

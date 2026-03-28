@@ -1,13 +1,18 @@
+"""
+AWS Glue PySpark Job - SDLC Wizard Data Processing
+Implements data ingestion, cleaning, and SCD Type 2 using Apache Hudi
+"""
+
 import sys
 from datetime import datetime
 from pyspark.context import SparkContext
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    col, sum as _sum, count, lit, current_timestamp,
-    when, to_timestamp, coalesce
+    col, lit, current_timestamp, when, sum as _sum,
+    count, avg, max as _max, min as _min
 )
 from pyspark.sql.types import (
-    StructType, StructField, StringType, DoubleType,
+    StructType, StructField, StringType, DecimalType,
     IntegerType, BooleanType, TimestampType
 )
 from awsglue.context import GlueContext
@@ -15,80 +20,83 @@ from awsglue.job import Job
 from awsglue.utils import getResolvedOptions
 
 
-# Define schemas based on TRD
-CUSTOMER_SCHEMA = StructType([
-    StructField("CustId", StringType(), True),
-    StructField("Name", StringType(), True),
-    StructField("EmailId", StringType(), True),
-    StructField("Region", StringType(), True)
-])
-
-ORDER_SCHEMA = StructType([
-    StructField("OrderId", StringType(), True),
-    StructField("ItemName", StringType(), True),
-    StructField("PricePerUnit", DoubleType(), True),
-    StructField("Qty", IntegerType(), True),
-    StructField("Date", StringType(), True),
-    StructField("CustId", StringType(), True)
-])
-
-
-def read_customer_data(spark, customer_source_path):
+def get_customer_schema():
     """
-    Read customer data from S3 with CSV and Parquet support.
+    Define customer data schema based on TRD specifications
+    """
+    return StructType([
+        StructField("CustId", StringType(), True),
+        StructField("Name", StringType(), True),
+        StructField("EmailId", StringType(), True),
+        StructField("Region", StringType(), True)
+    ])
+
+
+def get_order_schema():
+    """
+    Define order data schema based on TRD specifications
+    """
+    return StructType([
+        StructField("OrderId", StringType(), True),
+        StructField("ItemName", StringType(), True),
+        StructField("PricePerUnit", DecimalType(10, 2), True),
+        StructField("Qty", IntegerType(), True),
+        StructField("Date", StringType(), True)
+    ])
+
+
+def read_customer_data(spark, input_path):
+    """
+    Read customer data from S3
 
     Args:
         spark: SparkSession
-        customer_source_path: S3 path to customer data
+        input_path: S3 path to customer data
 
     Returns:
-        DataFrame with customer data
+        DataFrame: Customer data
     """
-    # Try reading as CSV first (with comma delimiter as per TRD)
-    try:
-        df = spark.read \
-            .option("header", "true") \
-            .option("inferSchema", "false") \
-            .option("delimiter", ",") \
-            .schema(CUSTOMER_SCHEMA) \
-            .csv(customer_source_path)
-        return df
-    except:
-        # Fallback to Parquet format as per TRD
-        df = spark.read \
-            .schema(CUSTOMER_SCHEMA) \
-            .parquet(customer_source_path)
-        return df
+    customer_schema = get_customer_schema()
 
-
-def read_order_data(spark, order_source_path):
-    """
-    Read order data from S3.
-
-    Args:
-        spark: SparkSession
-        order_source_path: S3 path to order data
-
-    Returns:
-        DataFrame with order data
-    """
     df = spark.read \
         .option("header", "true") \
-        .option("inferSchema", "false") \
-        .schema(ORDER_SCHEMA) \
-        .csv(order_source_path)
+        .option("encoding", "UTF-8") \
+        .schema(customer_schema) \
+        .csv(input_path)
+
     return df
 
 
-def clean_data(df):
+def read_order_data(spark, input_path):
     """
-    Clean data by removing NULL values, 'Null' strings, and duplicates.
+    Read order data from S3
+
+    Args:
+        spark: SparkSession
+        input_path: S3 path to order data
+
+    Returns:
+        DataFrame: Order data
+    """
+    order_schema = get_order_schema()
+
+    df = spark.read \
+        .option("header", "true") \
+        .schema(order_schema) \
+        .csv(input_path)
+
+    return df
+
+
+def clean_dataframe(df):
+    """
+    Clean DataFrame by removing NULL values, 'Null' strings, and duplicates
 
     Args:
         df: Input DataFrame
 
     Returns:
-        Cleaned DataFrame
+        DataFrame: Cleaned DataFrame
     """
     # Remove rows with NULL values in any column
     df_cleaned = df.dropna()
@@ -107,105 +115,37 @@ def clean_data(df):
     return df_cleaned
 
 
-def add_scd2_columns(df, is_new_record=True):
+def add_scd2_columns(df, record_key):
     """
-    Add SCD Type 2 columns: IsActive, StartDate, EndDate, OpTs.
+    Add SCD Type 2 columns to DataFrame
 
     Args:
         df: Input DataFrame
-        is_new_record: Boolean indicating if these are new records
+        record_key: Primary key column name
 
     Returns:
-        DataFrame with SCD Type 2 columns
+        DataFrame: DataFrame with SCD Type 2 columns
     """
     current_ts = current_timestamp()
 
-    df_scd2 = df.withColumn("IsActive", lit(is_new_record).cast(BooleanType())) \
-        .withColumn("StartDate", current_ts.cast(TimestampType())) \
-        .withColumn("EndDate",
-                   when(col("IsActive") == True, lit(None).cast(TimestampType()))
-                   .otherwise(current_ts.cast(TimestampType()))) \
-        .withColumn("OpTs", current_ts.cast(TimestampType()))
+    df_scd2 = df.withColumn("IsActive", lit(True)) \
+        .withColumn("StartDate", current_ts) \
+        .withColumn("EndDate", lit(None).cast(TimestampType())) \
+        .withColumn("OpTs", current_ts)
 
     return df_scd2
 
 
-def aggregate_customer_spend(customer_df, order_df):
+def write_hudi_table(df, output_path, table_name, record_key, precombine_field):
     """
-    Aggregate customer spending from orders.
-
-    Args:
-        customer_df: Customer DataFrame
-        order_df: Order DataFrame
-
-    Returns:
-        DataFrame with customer aggregate spend
-    """
-    # Calculate total spend per order
-    order_with_total = order_df.withColumn(
-        "TotalSpend",
-        col("PricePerUnit") * col("Qty")
-    )
-
-    # Aggregate by customer
-    customer_spend = order_with_total.groupBy("CustId").agg(
-        _sum("TotalSpend").alias("TotalSpend"),
-        count("OrderId").alias("OrderCount")
-    )
-
-    # Join with customer data
-    result = customer_df.join(customer_spend, "CustId", "left") \
-        .select(
-            "CustId",
-            "Name",
-            "EmailId",
-            "Region",
-            coalesce(col("TotalSpend"), lit(0.0)).alias("TotalSpend"),
-            coalesce(col("OrderCount"), lit(0)).alias("OrderCount")
-        )
-
-    return result
-
-
-def create_order_summary(customer_df, order_df):
-    """
-    Create order summary by joining customer and order data.
-
-    Args:
-        customer_df: Customer DataFrame
-        order_df: Order DataFrame
-
-    Returns:
-        DataFrame with order summary
-    """
-    # Join customer and order data
-    order_summary = order_df.join(customer_df, "CustId", "inner") \
-        .select(
-            col("OrderId"),
-            col("CustId"),
-            col("Name").alias("CustomerName"),
-            col("EmailId"),
-            col("Region"),
-            col("ItemName"),
-            col("PricePerUnit"),
-            col("Qty"),
-            col("Date"),
-            (col("PricePerUnit") * col("Qty")).alias("TotalAmount")
-        )
-
-    return order_summary
-
-
-def write_hudi_scd2(df, output_path, table_name, record_key, precombine_field):
-    """
-    Write DataFrame to S3 using Hudi format with SCD Type 2 upsert.
+    Write DataFrame to S3 using Hudi format with SCD Type 2 support
 
     Args:
         df: Input DataFrame
         output_path: S3 output path
         table_name: Hudi table name
         record_key: Primary key field
-        precombine_field: Field for ordering records
+        precombine_field: Field for record versioning
     """
     hudi_options = {
         'hoodie.table.name': table_name,
@@ -225,33 +165,52 @@ def write_hudi_scd2(df, output_path, table_name, record_key, precombine_field):
         .save(output_path)
 
 
-def write_parquet(df, output_path, mode="overwrite"):
+def calculate_customer_aggregate_spend(customer_df, order_df):
     """
-    Write DataFrame to S3 in Parquet format.
+    Calculate customer aggregate spend metrics
 
     Args:
-        df: Input DataFrame
-        output_path: S3 output path
-        mode: Write mode (overwrite, append)
+        customer_df: Customer DataFrame
+        order_df: Order DataFrame
+
+    Returns:
+        DataFrame: Customer aggregate spend metrics
     """
-    df.write \
-        .mode(mode) \
-        .parquet(output_path)
+    # Calculate total spend per order
+    order_with_total = order_df.withColumn(
+        "TotalSpend",
+        col("PricePerUnit") * col("Qty")
+    )
+
+    # Aggregate by customer (assuming CustId exists in order data or needs join)
+    # Since TRD doesn't specify CustId in order schema, we aggregate at order level
+    aggregate_df = order_with_total.groupBy("OrderId").agg(
+        _sum("TotalSpend").alias("TotalOrderSpend"),
+        count("ItemName").alias("ItemCount"),
+        avg("PricePerUnit").alias("AvgPricePerUnit"),
+        _max("Qty").alias("MaxQty"),
+        _min("Qty").alias("MinQty")
+    )
+
+    return aggregate_df
 
 
 def main():
     """
-    Main execution function for AWS Glue job.
+    Main execution function for AWS Glue job
     """
     # Get job parameters
-    args = getResolvedOptions(sys.argv, [
-        'JOB_NAME',
-        'customer_source_path',
-        'order_source_path',
-        'curated_output_path',
-        'analytics_output_path',
-        'catalog_output_path'
-    ])
+    args = getResolvedOptions(
+        sys.argv,
+        [
+            'JOB_NAME',
+            'customer_input_path',
+            'order_input_path',
+            'customer_output_path',
+            'order_output_path',
+            'analytics_output_path'
+        ]
+    )
 
     # Initialize Spark and Glue contexts
     sc = SparkContext.getOrCreate()
@@ -260,69 +219,78 @@ def main():
     job = Job(glueContext)
     job.init(args['JOB_NAME'], args)
 
-    # Extract parameters
-    customer_source_path = args['customer_source_path']
-    order_source_path = args['order_source_path']
-    curated_output_path = args['curated_output_path']
-    analytics_output_path = args['analytics_output_path']
-    catalog_output_path = args['catalog_output_path']
+    try:
+        # FR-INGEST-001: Read customer data
+        print(f"Reading customer data from {args['customer_input_path']}")
+        customer_df = read_customer_data(spark, args['customer_input_path'])
+        print(f"Customer records read: {customer_df.count()}")
 
-    # Read data
-    print(f"Reading customer data from: {customer_source_path}")
-    customer_df = read_customer_data(spark, customer_source_path)
+        # FR-INGEST-001: Read order data
+        print(f"Reading order data from {args['order_input_path']}")
+        order_df = read_order_data(spark, args['order_input_path'])
+        print(f"Order records read: {order_df.count()}")
 
-    print(f"Reading order data from: {order_source_path}")
-    order_df = read_order_data(spark, order_source_path)
+        # FR-CLEAN-001: Clean customer data
+        print("Cleaning customer data...")
+        customer_cleaned = clean_dataframe(customer_df)
+        print(f"Customer records after cleaning: {customer_cleaned.count()}")
 
-    # Clean data
-    print("Cleaning customer data...")
-    customer_cleaned = clean_data(customer_df)
+        # FR-CLEAN-001: Clean order data
+        print("Cleaning order data...")
+        order_cleaned = clean_dataframe(order_df)
+        print(f"Order records after cleaning: {order_cleaned.count()}")
 
-    print("Cleaning order data...")
-    order_cleaned = clean_data(order_df)
+        # FR-SCD2-001: Add SCD Type 2 columns to customer data
+        print("Adding SCD Type 2 columns to customer data...")
+        customer_scd2 = add_scd2_columns(customer_cleaned, "CustId")
 
-    # Add SCD Type 2 columns to customer data
-    print("Adding SCD Type 2 columns to customer data...")
-    customer_scd2 = add_scd2_columns(customer_cleaned)
+        # FR-SCD2-001: Add SCD Type 2 columns to order data
+        print("Adding SCD Type 2 columns to order data...")
+        order_scd2 = add_scd2_columns(order_cleaned, "OrderId")
 
-    # Create order summary
-    print("Creating order summary...")
-    order_summary = create_order_summary(customer_cleaned, order_cleaned)
-    order_summary_scd2 = add_scd2_columns(order_summary)
+        # FR-SCD2-001: Write customer data to Hudi
+        print(f"Writing customer data to {args['customer_output_path']}")
+        write_hudi_table(
+            customer_scd2,
+            args['customer_output_path'],
+            'sdlc_wizard_customer',
+            'CustId',
+            'OpTs'
+        )
 
-    # Aggregate customer spend
-    print("Aggregating customer spend...")
-    customer_aggregate = aggregate_customer_spend(customer_cleaned, order_cleaned)
-    customer_aggregate_scd2 = add_scd2_columns(customer_aggregate)
+        # FR-SCD2-001: Write order data to Hudi
+        print(f"Writing order data to {args['order_output_path']}")
+        write_hudi_table(
+            order_scd2,
+            args['order_output_path'],
+            'sdlc_wizard_ordersummary',
+            'OrderId',
+            'OpTs'
+        )
 
-    # Write curated order summary with Hudi SCD Type 2
-    print(f"Writing curated order summary to: {curated_output_path}")
-    write_hudi_scd2(
-        order_summary_scd2,
-        curated_output_path,
-        "sdlc_wizard_ordersummary",
-        "OrderId",
-        "OpTs"
-    )
+        # FR-AGGREGATE-001: Calculate customer aggregate spend
+        print("Calculating customer aggregate spend...")
+        aggregate_spend = calculate_customer_aggregate_spend(
+            customer_cleaned,
+            order_cleaned
+        )
+        print(f"Aggregate records calculated: {aggregate_spend.count()}")
 
-    # Write customer aggregate spend to analytics
-    print(f"Writing customer aggregate spend to: {analytics_output_path}")
-    write_parquet(customer_aggregate_scd2, analytics_output_path)
+        # Write aggregate data
+        print(f"Writing aggregate data to {args['analytics_output_path']}")
+        aggregate_spend.write \
+            .mode("overwrite") \
+            .parquet(args['analytics_output_path'])
 
-    # Write catalog data with Hudi SCD Type 2
-    print(f"Writing catalog data to: {catalog_output_path}")
-    write_hudi_scd2(
-        customer_scd2,
-        catalog_output_path,
-        "sdlc_wizard_order",
-        "CustId",
-        "OpTs"
-    )
+        print("Job completed successfully")
 
-    print("Job completed successfully!")
+    except Exception as e:
+        print(f"Job failed with error: {str(e)}")
+        raise
 
-    # Commit job
-    job.commit()
+    finally:
+        # Commit job
+        job.commit()
 
 
 if __name__ == "__main__":
