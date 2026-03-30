@@ -1,0 +1,11 @@
+CustId,Name,EmailId,Region,OrderId
+C001,John Doe,john@example.com,North,O001
+C001,John Doe,john@example.com,North,O002
+C002,Jane Smith,jane@example.com,South,O003
+C003,Bob Johnson,bob@example.com,East,O004
+C004,Alice Brown,alice@example.com,West,O005
+C005,Charlie Wilson,charlie@example.com,North,O006
+C006,Diana Prince,diana@example.com,South,O007
+C007,Ethan Hunt,ethan@example.com,East,O008
+C008,Fiona Green,fiona@example.com,West,O009
+C009,George Martin,george@example.com,North,O010
