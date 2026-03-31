@@ -1,0 +1,11 @@
+CustId,Name,EmailId,Region
+C001,John Doe,john.doe@example.com,North
+C002,Jane Smith,jane.smith@example.com,South
+C003,Bob Johnson,bob.johnson@example.com,East
+C004,Alice Williams,alice.williams@example.com,West
+C005,Charlie Brown,charlie.brown@example.com,North
+C006,Diana Prince,diana.prince@example.com,South
+C007,Edward Norton,edward.norton@example.com,East
+C008,Fiona Apple,fiona.apple@example.com,West
+C009,George Martin,george.martin@example.com,North
+C010,Helen Mirren,helen.mirren@example.com,South
