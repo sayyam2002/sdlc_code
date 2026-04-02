@@ -1,0 +1,194 @@
+# AWS Glue Job Runtime Parameters
+# Based on TRD Requirements - Customer Order SCD Type 2 ETL
+
+job:
+  name: customer-order-scd2-etl
+  log_level: INFO
+  description: "Process customer and order data with SCD Type 2 tracking using Hudi"
+
+inputs:
+  # Source paths from TRD
+  customer_source_path: s3://adif-sdlc/sdlc_wizard/customerdata/
+  order_source_path: s3://adif-sdlc/sdlc_wizard/orderdata/
+  source_format: parquet
+
+  # Alternative formats supported
+  customer_format: parquet
+  order_format: parquet
+
+outputs:
+  # Curated zone paths from TRD
+  curated_customer_path: s3://adif-sdlc/curated/sdlc_wizard/customer/
+  curated_order_path: s3://adif-sdlc/curated/sdlc_wizard/order/
+  ordersummary_path: s3://adif-sdlc/curated/sdlc_wizard/ordersummary/
+
+  # Analytics zone paths from TRD
+  customeraggregatespend_path: s3://adif-sdlc/analytics/customeraggregatespend/
+
+  # Write configuration
+  write_mode: append
+  output_format: hudi
+  partition_by: Region
+
+glue_catalog:
+  # Database from TRD
+  database: gen_ai_poc_databrickscoe
+
+  # Table names from TRD
+  customer_table: sdlc_wizard_customer
+  order_table: sdlc_wizard_order
+  ordersummary_table: ordersummary
+  customeraggregatespend_table: customeraggregatespend
+
+  # Catalog options
+  enable_catalog: true
+  update_behavior: UPDATE_IN_DATABASE
+
+hudi:
+  # Hudi configuration for SCD Type 2
+  customer_recordkey: CustId
+  order_recordkey: OrderId
+  precombine_field: OpTs
+  table_type: COPY_ON_WRITE
+  operation: upsert
+
+  # Hudi write options
+  hive_sync_enabled: true
+  hive_partition_fields: Region
+  hive_partition_extractor_class: org.apache.hudi.hive.MultiPartKeysValueExtractor
+
+  # Performance tuning
+  insert_shuffle_parallelism: 2
+  upsert_shuffle_parallelism: 2
+  bulk_insert_parallelism: 2
+
+scd2:
+  # SCD Type 2 column names from TRD
+  is_active_column: IsActive
+  start_date_column: StartDate
+  end_date_column: EndDate
+  operation_timestamp_column: OpTs
+
+  # SCD Type 2 logic
+  active_flag_value: true
+  inactive_flag_value: false
+  end_date_default: "9999-12-31T23:59:59Z"
+
+data_quality:
+  # Data cleaning rules from TRD
+  remove_nulls: true
+  remove_null_strings: true
+  remove_duplicates: true
+
+  # Null string patterns to remove
+  null_patterns:
+    - "Null"
+    - "NULL"
+    - "null"
+    - "None"
+    - "NONE"
+    - ""
+
+schemas:
+  # Customer schema from TRD
+  customer:
+    - name: CustId
+      type: string
+      nullable: false
+      primary_key: true
+    - name: Name
+      type: string
+      nullable: true
+    - name: EmailId
+      type: string
+      nullable: true
+    - name: Region
+      type: string
+      nullable: true
+    - name: IsActive
+      type: boolean
+      nullable: false
+    - name: StartDate
+      type: timestamp
+      nullable: false
+    - name: EndDate
+      type: timestamp
+      nullable: true
+    - name: OpTs
+      type: timestamp
+      nullable: false
+
+  # Order schema from TRD
+  order:
+    - name: OrderId
+      type: string
+      nullable: false
+      primary_key: true
+    - name: CustId
+      type: string
+      nullable: false
+    - name: ItemName
+      type: string
+      nullable: true
+    - name: PricePerUnit
+      type: decimal(10,2)
+      nullable: true
+    - name: Qty
+      type: integer
+      nullable: true
+    - name: IsActive
+      type: boolean
+      nullable: false
+    - name: StartDate
+      type: timestamp
+      nullable: false
+    - name: EndDate
+      type: timestamp
+      nullable: true
+    - name: OpTs
+      type: timestamp
+      nullable: false
+
+aggregations:
+  # Customer aggregate spend calculation from TRD
+  customeraggregatespend:
+    group_by:
+      - CustId
+      - Name
+      - Region
+    aggregates:
+      - column: TotalSpend
+        expression: "SUM(PricePerUnit * Qty)"
+      - column: OrderCount
+        expression: "COUNT(OrderId)"
+      - column: AvgOrderValue
+        expression: "AVG(PricePerUnit * Qty)"
+      - column: MaxOrderValue
+        expression: "MAX(PricePerUnit * Qty)"
+      - column: MinOrderValue
+        expression: "MIN(PricePerUnit * Qty)"
+
+runtime:
+  # Runtime configuration
+  watermark: "2024-01-01T00:00:00Z"
+  processing_time: "2024-01-15T10:30:00Z"
+
+  # Spark configuration
+  spark_configs:
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.adaptive.coalescePartitions.enabled: "true"
+    spark.serializer: "org.apache.spark.serializer.KryoSerializer"
+    spark.sql.hive.convertMetastoreParquet: "false"
+
+flags:
+  # Feature flags
+  enable_scd2: true
+  enable_data_cleaning: true
+  enable_aggregations: true
+  enable_glue_catalog: true
+  enable_hudi: true
+
+  # Debug flags
+  debug_mode: false
+  sample_data: false
+  sample_fraction: 0.1
