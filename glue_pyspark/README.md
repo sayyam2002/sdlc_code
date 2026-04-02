@@ -1,87 +1,88 @@
-# AWS Glue PySpark Job - Customer Order Processing
+# AWS Glue PySpark Job - Customer Order Data Processing
 
 ## Overview
-This AWS Glue PySpark job processes customer and order data with the following capabilities:
-- Ingests customer and order CSV files from S3
-- Cleans data by removing nulls and duplicates
-- Registers cleaned data in AWS Glue Data Catalog
-- Implements SCD Type 2 for order summary using Apache Hudi
-- Performs incremental processing based on customer changes
-- Calculates customer aggregate spending
+This AWS Glue job processes customer and order data with the following capabilities:
+- Data ingestion from S3 sources
+- Data cleaning (NULL removal, duplicate removal)
+- SCD Type 2 implementation using Apache Hudi
+- Customer aggregate spend calculation
+- Glue Catalog integration
 
-## Architecture
-- **Source Data**: CSV files in S3
-- **Processing**: AWS Glue PySpark with DataFrame API
-- **Storage**: Apache Hudi (Copy-on-Write) for SCD Type 2
-- **Catalog**: AWS Glue Data Catalog for Athena querying
-- **Output**: Parquet and Hudi formats
+## Project Structure
+```
+glue_pyspark/
+├── src/
+│   ├── __init__.py
+│   ├── main/
+│   │   └── job.py          # Main Glue job
+│   └── test/
+│       └── test_job.py     # Comprehensive test suite
+├── requirements.txt
+├── README.md
+└── .gitignore
+```
 
-## Job Parameters
-The job accepts the following runtime arguments:
+## Data Sources
+- **Customer Data**: `s3://adif-sdlc/sdlc_wizard/customerdata/`
+- **Order Data**: `s3://adif-sdlc/sdlc_wizard/orderdata/`
 
-- `--customer_source_path`: S3 path for customer CSV files (default: s3://adif-sdlc/sdlc_wizard/customerdata/)
-- `--order_source_path`: S3 path for order CSV files (default: s3://adif-sdlc/sdlc_wizard/orderdata/)
-- `--customer_output_path`: S3 path for cleaned customer data (default: s3://adif-sdlc/curated/sdlc_wizard/customer/)
-- `--order_output_path`: S3 path for cleaned order data (default: s3://adif-sdlc/curated/sdlc_wizard/order/)
-- `--ordersummary_output_path`: S3 path for order summary Hudi table (default: s3://adif-sdlc/curated/sdlc_wizard/ordersummary/)
-- `--customer_snapshot_path`: S3 path for customer snapshot (default: s3://adif-sdlc/curated/sdlc_wizard/customer_snapshot/)
-- `--aggregate_output_path`: S3 path for customer aggregate spend (default: s3://adif-sdlc/analytics/customeraggregatespend/)
-- `--database_name`: Glue catalog database name (required)
-- `--customer_table_name`: Customer table name (default: customer)
-- `--order_table_name`: Order table name (default: order)
-- `--ordersummary_table_name`: Order summary table name (default: ordersummary)
-- `--aggregate_table_name`: Aggregate table name (default: customeraggregatespend)
+## Data Outputs
+- **Curated Customer**: `s3://adif-sdlc/curated/sdlc_wizard/customer/`
+- **Curated Order**: `s3://adif-sdlc/curated/sdlc_wizard/order/`
+- **Order Summary**: `s3://adif-sdlc/curated/sdlc_wizard/ordersummary/`
+- **Customer Aggregate Spend**: `s3://adif-sdlc/analytics/customeraggregatespend/`
 
-## Execution
+## Schemas
+
+### Customer Schema
+- CustId: String
+- Name: String
+- EmailId: String
+- Region: String
+- IsActive: Boolean (SCD Type 2)
+- StartDate: Timestamp (SCD Type 2)
+- EndDate: Timestamp (SCD Type 2)
+- OpTs: Timestamp (SCD Type 2)
+
+### Order Schema
+- OrderId: String
+- ItemName: String
+- PricePerUnit: Double
+- Qty: Integer
+- Date: Date
+- IsActive: Boolean (SCD Type 2)
+- StartDate: Timestamp (SCD Type 2)
+- EndDate: Timestamp (SCD Type 2)
+- OpTs: Timestamp (SCD Type 2)
+
+## Requirements
+- Python 3.9+
+- PySpark 3.3+
+- AWS Glue 4.0
+- Apache Hudi
+
+## Installation
 ```bash
-aws glue start-job-run \
-  --job-name <job-name> \
-  --arguments='--database_name=<database>,--customer_source_path=s3://...'
+pip install -r requirements.txt
 ```
 
 ## Testing
-Run unit tests:
 ```bash
-python -m pytest src/test/test_job.py -v
+pytest src/test/test_job.py -v
 ```
 
-## Data Flow
-1. **Ingest**: Read customer and order CSV files from S3
-2. **Clean**: Remove nulls and duplicates
-3. **Catalog**: Write cleaned data to S3 and register in Glue Catalog
-4. **Detect Changes**: Compare current customers with previous snapshot
-5. **SCD Type 2**: Join and upsert order summary with historical tracking
-6. **Aggregate**: Calculate total spending per customer
-7. **Snapshot**: Save current customer state for next run
+## Glue Job Parameters
+- `--JOB_NAME`: Name of the Glue job
+- `--customer_input_path`: S3 path for customer data (default: s3://adif-sdlc/sdlc_wizard/customerdata/)
+- `--order_input_path`: S3 path for order data (default: s3://adif-sdlc/sdlc_wizard/orderdata/)
+- `--customer_output_path`: S3 path for curated customer data (default: s3://adif-sdlc/curated/sdlc_wizard/customer/)
+- `--order_output_path`: S3 path for curated order data (default: s3://adif-sdlc/curated/sdlc_wizard/order/)
+- `--order_summary_output_path`: S3 path for order summary (default: s3://adif-sdlc/curated/sdlc_wizard/ordersummary/)
+- `--aggregate_spend_output_path`: S3 path for aggregate spend (default: s3://adif-sdlc/analytics/customeraggregatespend/)
+- `--glue_database`: Glue Catalog database name (default: sdlc_wizard_db)
 
-## Schema Definitions
-
-### Customer Schema
-- CustId (String)
-- Name (String)
-- EmailId (String)
-- Region (String)
-
-### Order Schema
-- OrderId (String)
-- ItemName (String)
-- PricePerUnit (Double)
-- Qty (Long)
-- Date (String, YYYY-MM-DD)
-- CustId (String)
-
-### Order Summary Schema (SCD Type 2)
-- CustId (String)
-- OrderId (String)
-- Name (String)
-- EmailId (String)
-- Region (String)
-- ItemName (String)
-- PricePerUnit (Double)
-- Qty (Long)
-- Date (String)
-- TotalAmount (Double)
-- IsActive (Boolean)
-- StartDate (Timestamp)
-- EndDate (Timestamp)
-- OpTs (Timestamp)
+## Features
+1. **Data Cleaning**: Removes NULL values, 'Null' strings, and duplicates
+2. **SCD Type 2**: Tracks historical changes using Hudi format
+3. **Aggregations**: Calculates customer total spend
+4. **Glue Catalog Integration**: Registers tables for Athena queries
