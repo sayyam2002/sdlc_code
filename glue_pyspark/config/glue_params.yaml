@@ -1,0 +1,139 @@
+# AWS Glue Job Runtime Parameters
+# SDLC Wizard Customer-Order Data Pipeline
+
+job:
+  name: "sdlc-wizard-customer-order-pipeline"
+  log_level: "INFO"
+  description: "Process customer and order data with SCD Type 2 using Apache Hudi"
+
+inputs:
+  # Customer data source
+  customer_source_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
+
+  # Order data source
+  order_source_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
+
+  # Source format
+  source_format: "csv"
+
+  # CSV options
+  csv_header: true
+  csv_delimiter: ","
+  csv_quote: "\""
+  csv_escape: "\\"
+
+outputs:
+  # Curated output path for order summary
+  curated_target_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
+
+  # Analytics output path
+  analytics_target_path: "s3://adif-sdlc/analytics/"
+
+  # Athena results path
+  athena_results_path: "s3://adif-sdlc/athena-results/"
+
+  # Write mode (append, overwrite)
+  write_mode: "append"
+
+  # Output format
+  output_format: "hudi"
+
+glue_catalog:
+  # Glue Catalog database name
+  database_name: "sdlc_wizard_db"
+
+  # Table names
+  customer_table_name: "customer_data"
+  order_table_name: "order_data"
+  curated_table_name: "order_summary"
+
+hudi_config:
+  # Hudi table configuration
+  table_name: "sdlc_wizard_order_summary"
+
+  # Record key field (primary key)
+  record_key_field: "CustId"
+
+  # Precombine field (for deduplication)
+  precombine_field: "OpTs"
+
+  # Partition path field
+  partition_path_field: "Region"
+
+  # Table type (COPY_ON_WRITE or MERGE_ON_READ)
+  table_type: "COPY_ON_WRITE"
+
+  # Operation type
+  operation: "upsert"
+
+  # Hive sync
+  hive_sync_enabled: true
+  hive_sync_mode: "hms"
+
+scd2_config:
+  # SCD Type 2 column names
+  is_active_column: "IsActive"
+  start_date_column: "StartDate"
+  end_date_column: "EndDate"
+  op_timestamp_column: "OpTs"
+
+  # Default end date for active records
+  default_end_date: "9999-12-31T23:59:59Z"
+
+runtime:
+  # Watermark for incremental processing
+  watermark: "2024-01-01T00:00:00Z"
+
+  # Spark configurations
+  spark_executor_memory: "4g"
+  spark_executor_cores: 2
+  spark_driver_memory: "2g"
+
+flags:
+  # Enable SCD Type 2 processing
+  enable_scd2: true
+
+  # Enable Hudi format
+  enable_hudi: true
+
+  # Enable data cleaning
+  enable_data_cleaning: true
+
+  # Enable Glue Catalog registration
+  enable_catalog_registration: true
+
+  # Enable CloudWatch logging
+  enable_cloudwatch_logging: true
+
+data_quality:
+  # Data cleaning rules
+  remove_nulls: true
+  remove_null_strings: true
+  remove_duplicates: true
+
+  # Validation rules
+  validate_schema: true
+  validate_primary_key: true
+
+schemas:
+  customer:
+    - name: "CustId"
+      type: "string"
+      nullable: false
+    - name: "Name"
+      type: "string"
+      nullable: true
+    - name: "EmailId"
+      type: "string"
+      nullable: true
+    - name: "Region"
+      type: "string"
+      nullable: true
+
+  order:
+    - name: "CustId"
+      type: "string"
+      nullable: false
+    - name: "OrderId"
+      type: "string"
+      nullable: false
