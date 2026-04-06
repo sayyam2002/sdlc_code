@@ -1,349 +1,426 @@
+"""
+AWS Glue PySpark ETL Job - Customer Order Analytics with SCD Type 2
+Implements comprehensive data ingestion, cleaning, transformation, and historical tracking
+"""
+
 import sys
-import os
+import yaml
 from datetime import datetime
-from decimal import Decimal
-
-try:
-    from awsglue.transforms import *
-    from awsglue.utils import getResolvedOptions
-    from awsglue.context import GlueContext
-    from awsglue.job import Job
-    GLUE_AVAILABLE = True
-except ImportError:
-    GLUE_AVAILABLE = False
-
 from pyspark.context import SparkContext
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    col, lit, current_timestamp, to_date,
-    sum as spark_sum, count as spark_count
+    col, sum as _sum, lit, current_timestamp,
+    when, trim, lower, concat_ws, sha2
 )
-from pyspark.sql.types import (
-    StructType, StructField, StringType, DecimalType,
-    IntegerType, DateType, BooleanType, TimestampType
-)
-import yaml
+from pyspark.sql.types import BooleanType, TimestampType
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from awsglue.utils import getResolvedOptions
+
+# Initialize Spark and Glue contexts (builtins for AWS Glue)
+sc = SparkContext.getOrCreate()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
 
 
-REQUIRED_KEYS = [
-    'customer_input_path',
-    'order_input_path',
-    'customer_catalog_path',
-    'order_catalog_path',
-    'ordersummary_hudi_path',
-    'customer_aggregate_path',
-    'database_name',
-    'customer_table_name',
-    'order_table_name',
-    'ordersummary_table_name'
-]
-
-
-def load_yaml_defaults():
-    """Load default parameters from YAML config file."""
-    config_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        '..',
-        'config',
-        'glue_params.yaml'
-    )
-
-    if os.path.exists(config_path):
-        with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
-            return config.get('args', {})
-    return {}
-
-
-def get_job_parameters():
+def get_job_parameters(config_path=None):
     """
-    Get job parameters with dual-mode support:
-    - In AWS Glue: Load YAML defaults, then override with Glue args
-    - Locally: Load YAML defaults only
-    """
-    defaults = load_yaml_defaults()
+    Load job parameters from YAML configuration file.
 
-    if GLUE_AVAILABLE and '--JOB_NAME' in sys.argv:
-        keys_in_argv = [key for key in REQUIRED_KEYS if f'--{key}' in sys.argv]
+    Args:
+        config_path (str): Path to YAML config file. If None, uses default from job args.
 
-        if keys_in_argv:
-            glue_args = getResolvedOptions(sys.argv, keys_in_argv)
-            defaults.update(glue_args)
-
-    missing_keys = [key for key in REQUIRED_KEYS if key not in defaults]
-    if missing_keys:
-        raise ValueError(f"Missing required parameters: {', '.join(missing_keys)}")
-
-    return defaults
-
-
-def clean_dataframe(df):
-    """
-    Remove rows with NULL values or 'Null' string values.
-    Remove duplicate records based on all columns.
-    """
-    for column in df.columns:
-        df = df.filter(
-            (col(column).isNotNull()) &
-            (col(column) != 'Null')
-        )
-
-    df = df.dropDuplicates()
-
-    return df
-
-
-def read_customer_data(spark, input_path):
-    """Read and parse customer CSV data from S3."""
-    customer_schema = StructType([
-        StructField("CustId", StringType(), True),
-        StructField("Name", StringType(), True),
-        StructField("EmailId", StringType(), True),
-        StructField("Region", StringType(), True)
-    ])
-
-    df = spark.read.format("csv") \
-        .option("header", "true") \
-        .schema(customer_schema) \
-        .load(input_path)
-
-    return df
-
-
-def read_order_data(spark, input_path):
-    """Read and parse order CSV data from S3."""
-    order_schema = StructType([
-        StructField("OrderId", StringType(), True),
-        StructField("ItemName", StringType(), True),
-        StructField("PricePerUnit", StringType(), True),
-        StructField("Qty", StringType(), True),
-        StructField("Date", StringType(), True),
-        StructField("CustId", StringType(), True)
-    ])
-
-    df = spark.read.format("csv") \
-        .option("header", "true") \
-        .schema(order_schema) \
-        .load(input_path)
-
-    return df
-
-
-def transform_order_data(df):
-    """Transform order data with proper data types."""
-    df = df.withColumn("PricePerUnit", col("PricePerUnit").cast(DecimalType(10, 2))) \
-           .withColumn("Qty", col("Qty").cast(IntegerType())) \
-           .withColumn("Date", to_date(col("Date")))
-
-    return df
-
-
-def write_to_catalog(df, output_path, database_name, table_name, glue_context=None):
-    """Write DataFrame to S3 and register in Glue Data Catalog."""
-    df.write.mode("overwrite") \
-        .format("parquet") \
-        .save(output_path)
-
-    if glue_context and GLUE_AVAILABLE:
-        try:
-            glue_context.create_dynamic_frame.from_catalog(
-                database=database_name,
-                table_name=table_name
-            )
-        except Exception:
-            pass
-
-
-def get_changed_customers(spark, new_customer_df, catalog_path):
-    """
-    Identify customers that have changed by comparing with existing catalog.
-    Returns list of CustIds that have changes.
+    Returns:
+        dict: Job parameters as key-value pairs
     """
     try:
-        existing_df = spark.read.format("parquet").load(catalog_path)
+        # Try to get config path from Glue job arguments
+        if config_path is None:
+            try:
+                args = getResolvedOptions(sys.argv, ['config_path'])
+                config_path = args['config_path']
+            except Exception:
+                # Default config path for local testing
+                config_path = 'config/glue_params.yaml'
 
-        new_customer_df.createOrReplaceTempView("new_customers")
-        existing_df.createOrReplaceTempView("existing_customers")
+        # Load YAML configuration
+        if config_path.startswith('s3://'):
+            # For S3 paths, read using boto3
+            import boto3
+            s3 = boto3.client('s3')
+            bucket = config_path.split('/')[2]
+            key = '/'.join(config_path.split('/')[3:])
+            obj = s3.get_object(Bucket=bucket, Key=key)
+            config_content = obj['Body'].read().decode('utf-8')
+            params = yaml.safe_load(config_content)
+        else:
+            # For local paths
+            with open(config_path, 'r') as f:
+                params = yaml.safe_load(f)
 
-        changed_query = """
-        SELECT DISTINCT n.CustId
-        FROM new_customers n
-        LEFT JOIN existing_customers e ON n.CustId = e.CustId
-        WHERE e.CustId IS NULL
-           OR n.Name != e.Name
-           OR n.EmailId != e.EmailId
-           OR n.Region != e.Region
-        """
+        return params
 
-        changed_df = spark.sql(changed_query)
-        changed_cust_ids = [row.CustId for row in changed_df.collect()]
-
-        return changed_cust_ids
-    except Exception:
-        return []
+    except Exception as e:
+        print(f"Error loading configuration: {str(e)}")
+        raise
 
 
-def prepare_ordersummary_for_hudi(order_df, changed_cust_ids):
+def clean_dataframe(df, params):
     """
-    Prepare order summary data with SCD Type 2 fields.
-    Filter to only orders for changed customers if changes exist.
+    Clean DataFrame by removing NULLs, 'Null' strings, and duplicates.
+
+    Implements FR-CLEAN-001: Data Cleaning Requirements
+
+    Args:
+        df: Input DataFrame
+        params: Job parameters
+
+    Returns:
+        Cleaned DataFrame
     """
-    if changed_cust_ids:
-        order_df = order_df.filter(col("CustId").isin(changed_cust_ids))
+    cleaned_df = df
 
-    current_ts = current_timestamp()
+    # Remove rows with NULL values in any column
+    if params.get('remove_nulls', 'true').lower() == 'true':
+        cleaned_df = cleaned_df.dropna(how='any')
 
-    ordersummary_df = order_df.withColumn("IsActive", lit(True)) \
-                               .withColumn("StartDate", current_ts) \
-                               .withColumn("EndDate", lit(None).cast(TimestampType())) \
-                               .withColumn("OpTs", current_ts)
+    # Remove rows containing string literal "Null" in any column
+    if params.get('remove_null_strings', 'true').lower() == 'true':
+        null_literal = params.get('null_string_literal', 'Null')
+        for column in cleaned_df.columns:
+            cleaned_df = cleaned_df.filter(
+                ~(trim(lower(col(column).cast("string"))) == null_literal.lower())
+            )
 
-    return ordersummary_df
+    # Remove duplicate records
+    if params.get('remove_duplicates', 'true').lower() == 'true':
+        cleaned_df = cleaned_df.dropDuplicates()
 
-
-def write_hudi_table(df, hudi_path, table_name, database_name):
-    """Write DataFrame to S3 using Hudi format with SCD Type 2 configuration."""
-    hudi_options = {
-        'hoodie.table.name': table_name,
-        'hoodie.datasource.write.recordkey.field': 'OrderId',
-        'hoodie.datasource.write.precombine.field': 'OpTs',
-        'hoodie.datasource.write.operation': 'upsert',
-        'hoodie.datasource.write.table.type': 'COPY_ON_WRITE',
-        'hoodie.datasource.write.hive_style_partitioning': 'false',
-        'hoodie.datasource.hive_sync.enable': 'true',
-        'hoodie.datasource.hive_sync.database': database_name,
-        'hoodie.datasource.hive_sync.table': table_name,
-        'hoodie.datasource.hive_sync.mode': 'hms',
-        'hoodie.datasource.hive_sync.partition_extractor_class': 'org.apache.hudi.hive.NonPartitionedExtractor'
-    }
-
-    df.write.format("hudi") \
-        .options(**hudi_options) \
-        .mode("append") \
-        .save(hudi_path)
+    return cleaned_df
 
 
-def generate_customer_aggregate(spark, ordersummary_path, output_path):
+def read_customer_data(spark, params):
     """
-    Generate customer aggregate spend analytics.
-    Aggregates from active records in order summary.
+    Read and clean customer data from S3.
+
+    Implements FR-INGEST-001: Customer Data Ingestion
+
+    Args:
+        spark: SparkSession
+        params: Job parameters
+
+    Returns:
+        Cleaned customer DataFrame
     """
-    ordersummary_df = spark.read.format("hudi").load(ordersummary_path)
+    customer_path = params['customer_data_path']
+    customer_format = params.get('customer_data_format', 'parquet')
 
-    active_orders = ordersummary_df.filter(col("IsActive") == True)
+    print(f"Reading customer data from: {customer_path}")
+    customer_df = spark.read.format(customer_format).load(customer_path)
 
-    active_orders = active_orders.withColumn(
-        "TotalPrice",
-        col("PricePerUnit") * col("Qty")
+    # Clean customer data
+    customer_df = clean_dataframe(customer_df, params)
+
+    print(f"Customer records after cleaning: {customer_df.count()}")
+    return customer_df
+
+
+def read_order_data(spark, params):
+    """
+    Read and clean order data from S3.
+
+    Implements FR-INGEST-001: Order Data Ingestion
+
+    Args:
+        spark: SparkSession
+        params: Job parameters
+
+    Returns:
+        Cleaned order DataFrame
+    """
+    order_path = params['order_data_path']
+    order_format = params.get('order_data_format', 'parquet')
+
+    print(f"Reading order data from: {order_path}")
+    order_df = spark.read.format(order_format).load(order_path)
+
+    # Clean order data
+    order_df = clean_dataframe(order_df, params)
+
+    print(f"Order records after cleaning: {order_df.count()}")
+    return order_df
+
+
+def calculate_customer_aggregate_spend(customer_df, order_df, params):
+    """
+    Calculate total spend per customer by region.
+
+    Implements FR-AGG-001: Customer Aggregation Requirements
+    Implements FR-JOIN-001: Data Integration
+
+    Args:
+        customer_df: Customer DataFrame
+        order_df: Order DataFrame
+        params: Job parameters
+
+    Returns:
+        Aggregated spend DataFrame
+    """
+    join_key = params.get('join_key', 'CustId')
+
+    # Calculate TotalAmount = PricePerUnit * Qty
+    order_with_total = order_df.withColumn(
+        'TotalAmount',
+        col('PricePerUnit') * col('Qty')
     )
 
-    aggregate_df = active_orders.groupBy("CustId") \
-        .agg(
-            spark_sum("TotalPrice").alias("TotalSpend"),
-            spark_count("OrderId").alias("OrderCount")
-        )
+    # Join customer and order data
+    joined_df = customer_df.join(
+        order_with_total,
+        on=join_key,
+        how='inner'
+    )
 
-    aggregate_df.write.mode("overwrite") \
-        .format("parquet") \
-        .save(output_path)
+    # Aggregate total spend per customer by region
+    aggregate_df = joined_df.groupBy(
+        customer_df['CustId'],
+        customer_df['Name'],
+        customer_df['EmailId'],
+        customer_df['Region']
+    ).agg(
+        _sum('TotalAmount').alias('TotalSpend')
+    )
 
+    print(f"Aggregated records: {aggregate_df.count()}")
     return aggregate_df
 
 
+def write_customer_aggregate_spend(aggregate_df, params):
+    """
+    Write customer aggregate spend to S3 partitioned by Region.
+
+    Args:
+        aggregate_df: Aggregated DataFrame
+        params: Job parameters
+    """
+    output_path = params['customer_aggregate_spend_path']
+    output_format = params.get('aggregate_output_format', 'parquet')
+    write_mode = params.get('aggregate_write_mode', 'overwrite')
+    partition_column = params.get('partition_column', 'Region')
+
+    print(f"Writing customer aggregate spend to: {output_path}")
+
+    aggregate_df.write \
+        .format(output_format) \
+        .mode(write_mode) \
+        .partitionBy(partition_column) \
+        .save(output_path)
+
+    print("Customer aggregate spend written successfully")
+
+
+def create_order_summary_with_scd2(customer_df, order_df, params):
+    """
+    Create order summary with SCD Type 2 columns.
+
+    Implements FR-SCD2-001: Historical Tracking with SCD Type 2
+
+    Args:
+        customer_df: Customer DataFrame
+        order_df: Order DataFrame
+        params: Job parameters
+
+    Returns:
+        Order summary DataFrame with SCD Type 2 columns
+    """
+    join_key = params.get('join_key', 'CustId')
+
+    # Calculate TotalAmount
+    order_with_total = order_df.withColumn(
+        'TotalAmount',
+        col('PricePerUnit') * col('Qty')
+    )
+
+    # Join customer and order data
+    order_summary = customer_df.join(
+        order_with_total,
+        on=join_key,
+        how='inner'
+    )
+
+    # Add SCD Type 2 columns
+    current_ts = current_timestamp()
+
+    order_summary = order_summary \
+        .withColumn(params.get('scd_is_active_column', 'IsActive'), lit(True).cast(BooleanType())) \
+        .withColumn(params.get('scd_start_date_column', 'StartDate'), current_ts.cast(TimestampType())) \
+        .withColumn(params.get('scd_end_date_column', 'EndDate'), lit(None).cast(TimestampType())) \
+        .withColumn(params.get('scd_op_ts_column', 'OpTs'), current_ts.cast(TimestampType()))
+
+    print(f"Order summary records with SCD Type 2: {order_summary.count()}")
+    return order_summary
+
+
+def write_order_summary_hudi(order_summary_df, params):
+    """
+    Write order summary to S3 using Apache Hudi format with upsert operation.
+
+    Implements FR-SCD2-001: Hudi-based SCD Type 2 Storage
+
+    Args:
+        order_summary_df: Order summary DataFrame
+        params: Job parameters
+    """
+    output_path = params['order_summary_hudi_path']
+
+    # Hudi configuration
+    hudi_options = {
+        'hoodie.table.name': params.get('hudi_table_name', 'order_summary_hudi'),
+        'hoodie.datasource.write.recordkey.field': params.get('hudi_record_key', 'OrderId'),
+        'hoodie.datasource.write.precombine.field': params.get('hudi_precombine_field', 'OpTs'),
+        'hoodie.datasource.write.partitionpath.field': params.get('hudi_partition_field', 'Region'),
+        'hoodie.datasource.write.operation': params.get('hudi_operation', 'upsert'),
+        'hoodie.datasource.write.table.type': params.get('hudi_table_type', 'COPY_ON_WRITE'),
+        'hoodie.index.type': params.get('hudi_index_type', 'BLOOM'),
+        'hoodie.datasource.write.hive_style_partitioning': 'true',
+        'hoodie.datasource.hive_sync.enable': 'false',
+        'hoodie.upsert.shuffle.parallelism': params.get('spark_shuffle_partitions', '200'),
+        'hoodie.insert.shuffle.parallelism': params.get('spark_shuffle_partitions', '200')
+    }
+
+    print(f"Writing order summary to Hudi format at: {output_path}")
+    print(f"Hudi configuration: {hudi_options}")
+
+    order_summary_df.write \
+        .format('hudi') \
+        .options(**hudi_options) \
+        .mode(params.get('hudi_write_mode', 'append')) \
+        .save(output_path)
+
+    print("Order summary written successfully to Hudi")
+
+
+def register_glue_catalog_tables(spark, params):
+    """
+    Register tables in AWS Glue Data Catalog.
+
+    Args:
+        spark: SparkSession
+        params: Job parameters
+    """
+    if params.get('enable_glue_datacatalog', 'true').lower() != 'true':
+        return
+
+    database_name = params.get('glue_database_name', 'sdlc_wizard_db')
+
+    try:
+        # Create database if not exists
+        spark.sql(f"CREATE DATABASE IF NOT EXISTS {database_name}")
+
+        # Register customer aggregate spend table
+        aggregate_path = params['customer_aggregate_spend_path']
+        aggregate_table = params.get('aggregate_table_name', 'customer_aggregate_spend')
+
+        spark.sql(f"""
+            CREATE TABLE IF NOT EXISTS {database_name}.{aggregate_table}
+            USING parquet
+            LOCATION '{aggregate_path}'
+        """)
+
+        # Register order summary Hudi table
+        hudi_path = params['order_summary_hudi_path']
+        hudi_table = params.get('order_summary_table_name', 'order_summary')
+
+        spark.sql(f"""
+            CREATE TABLE IF NOT EXISTS {database_name}.{hudi_table}
+            USING hudi
+            LOCATION '{hudi_path}'
+        """)
+
+        print(f"Tables registered in Glue Catalog database: {database_name}")
+
+    except Exception as e:
+        print(f"Warning: Could not register tables in Glue Catalog: {str(e)}")
+
+
 def main():
-    """Main execution function for the Glue job."""
-    args = get_job_parameters()
+    """
+    Main ETL execution function.
 
-    if GLUE_AVAILABLE:
-        sc = SparkContext.getOrCreate()
-        glue_context = GlueContext(sc)
-        spark = glue_context.spark_session
-        job = Job(glue_context)
+    Orchestrates the complete ETL pipeline:
+    1. Load configuration
+    2. Read and clean customer data (FR-INGEST-001, FR-CLEAN-001)
+    3. Read and clean order data (FR-INGEST-001, FR-CLEAN-001)
+    4. Calculate customer aggregate spend (FR-AGG-001, FR-JOIN-001)
+    5. Write aggregate spend to S3
+    6. Create order summary with SCD Type 2 (FR-SCD2-001)
+    7. Write order summary to Hudi format (FR-SCD2-001)
+    8. Register tables in Glue Catalog
+    9. Commit job
+    """
+    try:
+        # Load job parameters
+        print("Loading job parameters...")
+        params = get_job_parameters()
 
-        if '--JOB_NAME' in sys.argv:
-            job_name_args = getResolvedOptions(sys.argv, ['JOB_NAME'])
-            job.init(job_name_args['JOB_NAME'], args)
-    else:
-        spark = SparkSession.builder \
-            .appName("CustomerOrderProcessing") \
-            .getOrCreate()
-        glue_context = None
-        job = None
+        # Initialize Glue job
+        job_name = params.get('job_name', 'customer-order-analytics-etl')
+        job.init(job_name, {})
 
-    print("Starting Customer Order Processing Pipeline")
-    print(f"Parameters: {args}")
+        print(f"Starting ETL job: {job_name}")
+        print(f"Timestamp: {datetime.now().isoformat()}")
 
-    print("Reading customer data...")
-    customer_df = read_customer_data(spark, args['customer_input_path'])
+        # Configure Spark settings
+        spark.conf.set("spark.sql.shuffle.partitions", params.get('spark_shuffle_partitions', '200'))
+        spark.conf.set("spark.sql.adaptive.enabled", params.get('spark_sql_adaptive_enabled', 'true'))
 
-    print("Cleaning customer data...")
-    customer_clean_df = clean_dataframe(customer_df)
+        # Step 1: Read and clean customer data
+        print("\n=== Step 1: Reading Customer Data ===")
+        customer_df = read_customer_data(spark, params)
+        customer_df.cache()
 
-    print("Reading order data...")
-    order_df = read_order_data(spark, args['order_input_path'])
+        # Step 2: Read and clean order data
+        print("\n=== Step 2: Reading Order Data ===")
+        order_df = read_order_data(spark, params)
+        order_df.cache()
 
-    print("Cleaning order data...")
-    order_clean_df = clean_dataframe(order_df)
+        # Step 3: Calculate customer aggregate spend
+        print("\n=== Step 3: Calculating Customer Aggregate Spend ===")
+        aggregate_df = calculate_customer_aggregate_spend(customer_df, order_df, params)
 
-    print("Transforming order data...")
-    order_transformed_df = transform_order_data(order_clean_df)
+        # Step 4: Write customer aggregate spend
+        print("\n=== Step 4: Writing Customer Aggregate Spend ===")
+        write_customer_aggregate_spend(aggregate_df, params)
 
-    print("Identifying changed customers...")
-    changed_cust_ids = get_changed_customers(
-        spark,
-        customer_clean_df,
-        args['customer_catalog_path']
-    )
-    print(f"Found {len(changed_cust_ids)} changed customers")
+        # Step 5: Create order summary with SCD Type 2
+        print("\n=== Step 5: Creating Order Summary with SCD Type 2 ===")
+        order_summary_df = create_order_summary_with_scd2(customer_df, order_df, params)
 
-    print("Writing customer data to catalog...")
-    write_to_catalog(
-        customer_clean_df,
-        args['customer_catalog_path'],
-        args['database_name'],
-        args['customer_table_name'],
-        glue_context
-    )
+        # Step 6: Write order summary to Hudi
+        print("\n=== Step 6: Writing Order Summary to Hudi ===")
+        write_order_summary_hudi(order_summary_df, params)
 
-    print("Writing order data to catalog...")
-    write_to_catalog(
-        order_transformed_df,
-        args['order_catalog_path'],
-        args['database_name'],
-        args['order_table_name'],
-        glue_context
-    )
+        # Step 7: Register tables in Glue Catalog
+        print("\n=== Step 7: Registering Tables in Glue Catalog ===")
+        register_glue_catalog_tables(spark, params)
 
-    print("Preparing order summary for Hudi...")
-    ordersummary_df = prepare_ordersummary_for_hudi(
-        order_transformed_df,
-        changed_cust_ids
-    )
-
-    if ordersummary_df.count() > 0:
-        print("Writing order summary to Hudi...")
-        write_hudi_table(
-            ordersummary_df,
-            args['ordersummary_hudi_path'],
-            args['ordersummary_table_name'],
-            args['database_name']
-        )
-
-        print("Generating customer aggregate spend...")
-        aggregate_df = generate_customer_aggregate(
-            spark,
-            args['ordersummary_hudi_path'],
-            args['customer_aggregate_path']
-        )
-
-        print(f"Customer aggregate records: {aggregate_df.count()}")
-    else:
-        print("No order summary records to process")
-
-    if job:
+        # Commit job
+        print("\n=== Job Completed Successfully ===")
         job.commit()
 
-    print("Pipeline completed successfully")
+        print(f"End timestamp: {datetime.now().isoformat()}")
+
+    except Exception as e:
+        print(f"\n=== Job Failed ===")
+        print(f"Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise
+
+    finally:
+        # Cleanup
+        spark.catalog.clearCache()
 
 
 if __name__ == "__main__":

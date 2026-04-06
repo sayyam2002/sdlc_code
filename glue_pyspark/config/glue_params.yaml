@@ -1,0 +1,80 @@
+# AWS Glue Job Parameters Configuration
+# All values must be strings as per Glue requirements
+
+# Data Source Paths
+customer_data_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
+order_data_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
+
+# Data Output Paths
+customer_aggregate_spend_path: "s3://adif-sdlc/analytics/customeraggregatespend/"
+order_summary_hudi_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
+
+# Input Data Formats
+customer_data_format: "parquet"
+order_data_format: "parquet"
+
+# Output Data Formats
+aggregate_output_format: "parquet"
+order_summary_output_format: "hudi"
+
+# Glue Catalog Configuration
+glue_database_name: "sdlc_wizard_db"
+customer_table_name: "customer_data"
+order_table_name: "order_data"
+aggregate_table_name: "customer_aggregate_spend"
+order_summary_table_name: "order_summary"
+
+# Hudi Configuration for SCD Type 2
+hudi_table_name: "order_summary_hudi"
+hudi_record_key: "OrderId"
+hudi_precombine_field: "OpTs"
+hudi_partition_field: "Region"
+hudi_operation: "upsert"
+hudi_table_type: "COPY_ON_WRITE"
+hudi_index_type: "BLOOM"
+
+# Data Processing Parameters
+partition_column: "Region"
+join_key: "CustId"
+duplicate_subset_customer: "CustId,Name,EmailId,Region"
+duplicate_subset_order: "OrderId,CustId,ItemName,Date"
+
+# SCD Type 2 Column Names
+scd_is_active_column: "IsActive"
+scd_start_date_column: "StartDate"
+scd_end_date_column: "EndDate"
+scd_op_ts_column: "OpTs"
+
+# Data Cleaning Parameters
+null_string_literal: "Null"
+remove_nulls: "true"
+remove_null_strings: "true"
+remove_duplicates: "true"
+
+# Spark Configuration
+spark_shuffle_partitions: "200"
+spark_sql_adaptive_enabled: "true"
+spark_sql_adaptive_coalesce_partitions_enabled: "true"
+
+# Job Configuration
+job_name: "customer-order-analytics-etl"
+job_bookmark_option: "job-bookmark-enable"
+enable_metrics: "true"
+enable_continuous_cloudwatch_log: "true"
+
+# Encoding and Storage
+customer_encoding: "UTF-8"
+order_storage: "S3"
+
+# Write Modes
+aggregate_write_mode: "overwrite"
+hudi_write_mode: "append"
+
+# Optimization Parameters
+enable_glue_datacatalog: "true"
+enable_s3_parquet_optimized_committer: "true"
+enable_rename_algorithm_v2: "true"
+
+# Retry Configuration
+max_retries: "3"
+retry_wait_seconds: "60"
