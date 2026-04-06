@@ -1,0 +1,92 @@
+# AWS Glue Job Parameters - Customer Order Analytics with SCD Type 2
+
+# Input Sources
+inputs_customer_raw_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
+inputs_customer_curated_path: "s3://adif-sdlc/curated/sdlc_wizard/customer/"
+inputs_order_raw_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
+inputs_order_curated_path: "s3://adif-sdlc/curated/sdlc_wizard/order/"
+inputs_ordersummary_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
+
+# Input Formats
+inputs_customer_format: "csv"
+inputs_order_format: "csv"
+inputs_delimiter: ","
+
+# Output Targets
+outputs_customer_aggregate_path: "s3://adif-sdlc/analytics/customeraggregatespend/"
+outputs_customer_scd2_path: "s3://adif-sdlc/curated/sdlc_wizard/customer_scd2/"
+outputs_format: "hudi"
+
+# Glue Catalog Configuration
+glue_database_name: "sdlc_wizard_db"
+glue_customer_table_name: "customer_scd2"
+glue_aggregate_table_name: "customer_aggregate_spend"
+
+# Hudi Configuration - Customer SCD2
+hudi_customer_table_name: "customer_scd2"
+hudi_customer_record_key: "CustId"
+hudi_customer_precombine_field: "OpTs"
+hudi_customer_partition_field: "Region"
+hudi_operation_type: "upsert"
+hudi_table_type: "COPY_ON_WRITE"
+
+# Hudi Configuration - Aggregate
+hudi_aggregate_table_name: "customer_aggregate_spend"
+hudi_aggregate_record_key: "CustId"
+hudi_aggregate_precombine_field: "OpTs"
+hudi_aggregate_partition_field: "Region"
+
+# Schema Definitions
+customer_schema:
+  - name: "CustId"
+    type: "string"
+  - name: "Name"
+    type: "string"
+  - name: "EmailId"
+    type: "string"
+  - name: "Region"
+    type: "string"
+
+order_schema:
+  - name: "OrderId"
+    type: "string"
+  - name: "CustId"
+    type: "string"
+  - name: "OrderAmount"
+    type: "double"
+  - name: "OrderDate"
+    type: "timestamp"
+
+# SCD Type 2 Columns
+scd2_columns:
+  is_active: "IsActive"
+  start_date: "StartDate"
+  end_date: "EndDate"
+  operation_timestamp: "OpTs"
+
+# Data Quality Rules
+data_quality:
+  remove_nulls: true
+  remove_null_strings: true
+  remove_duplicates: true
+  null_string_values:
+    - "Null"
+    - "NULL"
+    - "null"
+
+# Aggregation Configuration
+aggregation:
+  group_by_columns:
+    - "CustId"
+    - "Region"
+  aggregate_columns:
+    total_spend: "sum(OrderAmount)"
+    order_count: "count(OrderId)"
+    avg_order_value: "avg(OrderAmount)"
+    first_order_date: "min(OrderDate)"
+    last_order_date: "max(OrderDate)"
+
+# Job Configuration
+job_name: "customer-order-analytics-scd2"
+job_bookmark_enabled: true
+enable_glue_datacatalog: true
