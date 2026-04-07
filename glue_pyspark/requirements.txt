@@ -1,4 +1,32 @@
+# AWS Glue Dependencies (pre-installed in Glue environment)
+# Listed for local development only
+
+# Core PySpark (Glue 4.0 uses Spark 3.3.0)
 pyspark==3.3.0
-pytest==7.4.3
-pytest-mock==3.12.0
-pyyaml==6.0
+
+# AWS SDK
+boto3>=1.26.0
+botocore>=1.29.0
+
+# AWS Glue Libraries (for local testing)
+# Note: These are pre-installed in AWS Glue environment
+awsglue-local==1.0.0
+
+# Apache Hudi (for SCD Type 2)
+# Note: Hudi 0.12.0 is pre-installed in Glue 4.0
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-mock>=3.11.1
+moto>=4.1.0
+
+# Data Processing
+pandas>=1.5.3
+numpy>=1.24.0
+
+# Configuration
+PyYAML>=6.0
+
+# Utilities
+python-dateutil>=2.8.2

@@ -1,0 +1,126 @@
+# AWS Glue Job Configuration
+# Customer Order Analytics with SCD Type 2
+
+job_name: "customer-order-analytics-scd2"
+glue_version: "4.0"
+python_version: "3"
+
+# AWS Glue Catalog Configuration
+catalog:
+  database_name: "sdlc_wizard_db"
+
+# S3 Data Sources
+data_sources:
+  # Raw Data Sources
+  customer_raw:
+    path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
+    format: "csv"
+    schema:
+      - name: "CustId"
+        type: "string"
+      - name: "Name"
+        type: "string"
+      - name: "EmailId"
+        type: "string"
+      - name: "Region"
+        type: "string"
+    options:
+      header: "true"
+      inferSchema: "false"
+
+  order_raw:
+    path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
+    format: "csv"
+    schema:
+      - name: "OrderId"
+        type: "string"
+      - name: "ItemName"
+        type: "string"
+      - name: "PricePerUnit"
+        type: "double"
+      - name: "Qty"
+        type: "integer"
+      - name: "Date"
+        type: "string"
+    options:
+      header: "true"
+      inferSchema: "false"
+
+# S3 Output Destinations
+data_targets:
+  # Curated Layer (SCD Type 2 with Hudi)
+  customer_curated:
+    path: "s3://adif-sdlc/curated/sdlc_wizard/customer/"
+    format: "hudi"
+    table_name: "customer_curated"
+    record_key: "CustId"
+    precombine_field: "OpTs"
+    partition_path: "Region"
+    operation: "upsert"
+
+  order_curated:
+    path: "s3://adif-sdlc/curated/sdlc_wizard/order/"
+    format: "hudi"
+    table_name: "order_curated"
+    record_key: "OrderId"
+    precombine_field: "OpTs"
+    partition_path: ""
+    operation: "upsert"
+
+  # Analytics Layer
+  order_summary:
+    path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
+    format: "parquet"
+    table_name: "order_summary"
+    mode: "overwrite"
+
+  customer_aggregate_spend:
+    path: "s3://adif-sdlc/analytics/customeraggregatespend/"
+    format: "parquet"
+    table_name: "customer_aggregate_spend"
+    mode: "overwrite"
+
+# SCD Type 2 Configuration
+scd_type2:
+  enabled: true
+  columns:
+    is_active: "IsActive"
+    start_date: "StartDate"
+    end_date: "EndDate"
+    operation_timestamp: "OpTs"
+  default_end_date: "9999-12-31 23:59:59"
+
+# Data Quality Rules
+data_quality:
+  remove_nulls: true
+  remove_null_strings: true  # Remove 'Null' as string
+  deduplicate: true
+  null_string_values:
+    - "Null"
+    - "NULL"
+    - "null"
+
+# Hudi Configuration
+hudi_options:
+  hoodie.datasource.write.storage.type: "COPY_ON_WRITE"
+  hoodie.datasource.write.operation: "upsert"
+  hoodie.datasource.write.precombine.field: "OpTs"
+  hoodie.upsert.shuffle.parallelism: "2"
+  hoodie.insert.shuffle.parallelism: "2"
+  hoodie.cleaner.policy: "KEEP_LATEST_COMMITS"
+  hoodie.cleaner.commits.retained: "10"
+
+# Spark Configuration
+spark_config:
+  spark.serializer: "org.apache.spark.serializer.KryoSerializer"
+  spark.sql.hive.convertMetastoreParquet: "false"
+  spark.sql.legacy.parquet.int96AsTimestamp: "true"
+  spark.sql.legacy.timeParserPolicy: "LEGACY"
+
+# Job Parameters
+job_parameters:
+  enable_glue_catalog: true
+  enable_metrics: true
+  enable_continuous_cloudwatch_log: true
+  job_bookmark_option: "job-bookmark-enable"
+  temp_dir: "s3://adif-sdlc/temp/"
