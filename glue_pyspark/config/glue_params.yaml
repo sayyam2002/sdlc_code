@@ -1,0 +1,101 @@
+# AWS Glue Job Configuration
+# Based on TRD Requirements
+
+job_name: "customer-order-scd2-processing"
+glue_version: "4.0"
+python_version: "3"
+
+# Glue Catalog Configuration
+glue_catalog:
+  database: "gen_ai_poc_databrickscoe"
+  customer_table: "sdlc_wizard_customer"
+  order_table: "sdlc_wizard_order"
+
+# S3 Data Sources (from TRD)
+data_sources:
+  customer_data_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
+  order_data_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
+  customer_aggregate_spend_path: "s3://adif-sdlc/analytics/customeraggregatespend/"
+  order_summary_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
+
+# S3 Catalog Paths (from TRD)
+catalog_paths:
+  customer_catalog_path: "s3://adif-sdlc/catalog/sdlc_wizard_customer/"
+  order_catalog_path: "s3://adif-sdlc/catalog/sdlc_wizard_order/"
+
+# Schema Definitions (from TRD)
+schemas:
+  customer:
+    - name: "CustId"
+      type: "string"
+    - name: "Name"
+      type: "string"
+    - name: "EmailId"
+      type: "string"
+    - name: "Region"
+      type: "string"
+
+  order:
+    - name: "OrderId"
+      type: "string"
+    - name: "CustId"
+      type: "string"
+    - name: "OrderDate"
+      type: "string"
+    - name: "Amount"
+      type: "double"
+
+# SCD Type 2 Configuration
+scd_type2:
+  enabled: true
+  columns:
+    is_active: "IsActive"
+    start_date: "StartDate"
+    end_date: "EndDate"
+    operation_timestamp: "OpTs"
+  default_end_date: "9999-12-31 23:59:59"
+
+# Hudi Configuration
+hudi:
+  format: "hudi"
+  customer:
+    table_name: "sdlc_wizard_customer_hudi"
+    record_key: "CustId"
+    precombine_field: "OpTs"
+    partition_path: "Region"
+    operation: "upsert"
+    table_type: "COPY_ON_WRITE"
+
+  order:
+    table_name: "sdlc_wizard_order_hudi"
+    record_key: "OrderId"
+    precombine_field: "OpTs"
+    partition_path: "OrderDate"
+    operation: "upsert"
+    table_type: "COPY_ON_WRITE"
+
+# Data Cleaning Rules (from TRD)
+data_cleaning:
+  remove_nulls: true
+  remove_null_strings: true
+  remove_duplicates: true
+  null_string_values:
+    - "Null"
+    - "NULL"
+    - "null"
+
+# Spark Configuration
+spark_config:
+  spark.sql.adaptive.enabled: "true"
+  spark.sql.adaptive.coalescePartitions.enabled: "true"
+  spark.serializer: "org.apache.spark.serializer.KryoSerializer"
+  spark.sql.hive.convertMetastoreParquet: "false"
+
+# Job Parameters
+job_parameters:
+  enable_metrics: true
+  enable_continuous_cloudwatch_log: true
+  job_bookmark_option: "job-bookmark-enable"
+  max_concurrent_runs: 1
+  timeout: 2880  # 48 hours in minutes
+  max_retries: 1
