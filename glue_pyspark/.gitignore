@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# C extensions
+*.so
+
 # Distribution / packaging
 .Python
 build/
@@ -21,6 +24,10 @@ wheels/
 .installed.cfg
 *.egg
 
+# PyInstaller
+*.manifest
+*.spec
+
 # Unit test / coverage reports
 htmlcov/
 .tox/
@@ -33,28 +40,38 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 
-# Virtual environments
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# Environment variables
+.env
+.venv
+env/
 venv/
 ENV/
-env/
-.venv
 
 # IDE
-.vscode/
 .idea/
+.vscode/
 *.swp
 *.swo
 *~
+
+# AWS
+.aws/
+*.pem
+
+# Logs
+*.log
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Logs
-*.log
-
-# Glue
-.glue/
-metastore_db/
+# Spark
 spark-warehouse/
+metastore_db/
 derby.log

@@ -1,0 +1,145 @@
+# AWS Glue Job Configuration Parameters
+# Customer Order SCD Type 2 Processing Pipeline
+
+# Data Source Paths
+source_customer_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
+source_order_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
+
+# Output Paths
+output_customer_snapshot_path: "s3://adif-sdlc/curated/sdlc_wizard/customer_snapshot/"
+output_order_summary_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
+output_curated_customer_path: "s3://adif-sdlc/curated/sdlc_wizard/customer/"
+output_curated_order_path: "s3://adif-sdlc/curated/sdlc_wizard/order/"
+output_analytics_path: "s3://adif-sdlc/analytics/"
+
+# Temporary and Working Paths
+temp_path: "s3://adif-sdlc/temp/"
+athena_results_path: "s3://adif-sdlc/athena-results/"
+
+# AWS Glue Catalog Configuration
+glue_database: "sdlc_wizard"
+glue_table_customer: "customer"
+glue_table_order: "order"
+glue_table_customer_snapshot: "customer_snapshot"
+glue_table_order_summary: "ordersummary"
+
+# Data Processing Configuration
+data_format_customer: "csv"
+data_format_order: "csv"
+output_format: "parquet"
+
+# CSV Options
+csv_header: true
+csv_delimiter: ","
+csv_quote: "\""
+csv_escape: "\\"
+csv_infer_schema: true
+
+# SCD Type 2 Configuration
+scd_type: 2
+primary_key_customer: "CustId"
+primary_key_order: "OrderId"
+tracking_columns:
+  - "IsActive"
+  - "StartDate"
+  - "EndDate"
+  - "OpTs"
+
+# Hudi Configuration
+hudi_table_type: "COPY_ON_WRITE"
+hudi_operation: "upsert"
+hudi_precombine_field: "OpTs"
+hudi_recordkey_field_customer: "CustId"
+hudi_recordkey_field_order: "OrderId"
+hudi_partitionpath_field: ""
+hudi_index_type: "BLOOM"
+hudi_bloom_index_parallelism: 100
+hudi_insert_shuffle_parallelism: 100
+hudi_upsert_shuffle_parallelism: 100
+
+# Data Cleaning Configuration
+remove_nulls: true
+remove_null_strings: true
+remove_duplicates: true
+null_string_values:
+  - "Null"
+  - "NULL"
+  - "null"
+  - "None"
+  - "NONE"
+  - "none"
+
+# Schema Definitions
+customer_schema:
+  - name: "CustId"
+    type: "string"
+    nullable: false
+  - name: "Name"
+    type: "string"
+    nullable: false
+  - name: "EmailId"
+    type: "string"
+    nullable: true
+  - name: "Region"
+    type: "string"
+    nullable: true
+
+order_schema:
+  - name: "CustId"
+    type: "string"
+    nullable: false
+  - name: "Name"
+    type: "string"
+    nullable: false
+  - name: "EmailId"
+    type: "string"
+    nullable: true
+  - name: "Region"
+    type: "string"
+    nullable: true
+  - name: "OrderId"
+    type: "string"
+    nullable: false
+
+order_summary_schema:
+  - name: "Name"
+    type: "string"
+    nullable: false
+  - name: "TotalAmount"
+    type: "decimal(18,2)"
+    nullable: false
+  - name: "Date"
+    type: "date"
+    nullable: false
+
+# Aggregation Configuration
+aggregate_by_customer: true
+aggregation_columns:
+  - "Name"
+aggregation_metrics:
+  - column: "TotalAmount"
+    function: "sum"
+    alias: "TotalAmount"
+
+# Performance Configuration
+shuffle_partitions: 200
+broadcast_threshold: 10485760  # 10MB
+adaptive_execution: true
+dynamic_partition_pruning: true
+
+# Logging Configuration
+log_level: "INFO"
+enable_metrics: true
+enable_data_quality_checks: true
+
+# Job Configuration
+job_name: "customer-order-scd2-job"
+job_bookmark: "job-bookmark-enable"
+max_concurrent_runs: 1
+timeout_minutes: 120
+max_retries: 2
+
+# Data Quality Thresholds
+min_record_count: 1
+max_null_percentage: 5.0
+max_duplicate_percentage: 1.0
