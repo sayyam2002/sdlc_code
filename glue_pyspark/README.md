@@ -1,87 +1,109 @@
-# AWS Glue PySpark Job - Customer Order Processing
+# AWS Glue PySpark Job - Minimal Template
 
 ## Overview
-This AWS Glue PySpark job processes customer and order data with the following capabilities:
-- Ingests customer and order CSV files from S3
-- Cleans data by removing nulls and duplicates
-- Registers cleaned data in AWS Glue Data Catalog
-- Implements SCD Type 2 for order summary using Apache Hudi
-- Performs incremental processing based on customer changes
-- Calculates customer aggregate spending
+This is a minimal AWS Glue PySpark job template created because the source FRD/TRD contains **NO REQUIREMENTS IDENTIFIED**.
 
-## Architecture
-- **Source Data**: CSV files in S3
-- **Processing**: AWS Glue PySpark with DataFrame API
-- **Storage**: Apache Hudi (Copy-on-Write) for SCD Type 2
-- **Catalog**: AWS Glue Data Catalog for Athena querying
-- **Output**: Parquet and Hudi formats
+**Status**: ⚠️ Template Only - Requires Actual Requirements
 
-## Job Parameters
-The job accepts the following runtime arguments:
+## Project Structure
+```
+glue_pyspark/
+├── config/
+│   └── glue_params.yaml          # Job parameters
+├── src/
+│   ├── main/
+│   │   ├── __init__.py
+│   │   └── job.py                # Main Glue job
+│   └── test/
+│       ├── __init__.py
+│       └── test_job.py           # Unit tests
+├── sample_data/
+│   └── sample_input.csv          # Sample data for testing
+├── .gitignore
+├── README.md
+├── requirements.txt
+└── pytest.ini
+```
 
-- `--customer_source_path`: S3 path for customer CSV files (default: s3://adif-sdlc/sdlc_wizard/customerdata/)
-- `--order_source_path`: S3 path for order CSV files (default: s3://adif-sdlc/sdlc_wizard/orderdata/)
-- `--customer_output_path`: S3 path for cleaned customer data (default: s3://adif-sdlc/curated/sdlc_wizard/customer/)
-- `--order_output_path`: S3 path for cleaned order data (default: s3://adif-sdlc/curated/sdlc_wizard/order/)
-- `--ordersummary_output_path`: S3 path for order summary Hudi table (default: s3://adif-sdlc/curated/sdlc_wizard/ordersummary/)
-- `--customer_snapshot_path`: S3 path for customer snapshot (default: s3://adif-sdlc/curated/sdlc_wizard/customer_snapshot/)
-- `--aggregate_output_path`: S3 path for customer aggregate spend (default: s3://adif-sdlc/analytics/customeraggregatespend/)
-- `--database_name`: Glue catalog database name (required)
-- `--customer_table_name`: Customer table name (default: customer)
-- `--order_table_name`: Order table name (default: order)
-- `--ordersummary_table_name`: Order summary table name (default: ordersummary)
-- `--aggregate_table_name`: Aggregate table name (default: customeraggregatespend)
+## Requirements
+- Python 3.9+
+- PySpark 3.3+
+- AWS Glue 4.0
+- pytest 7.0+
 
-## Execution
+## Installation
 ```bash
-aws glue start-job-run \
-  --job-name <job-name> \
-  --arguments='--database_name=<database>,--customer_source_path=s3://...'
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+## Configuration
+Edit `config/glue_params.yaml` with your specific parameters:
+- S3 paths
+- Database names
+- Table names
+- Processing parameters
+
+## Running Locally
+```bash
+# Run the job
+python src/main/job.py
+
+# Run tests
+pytest src/test/ -v
+```
+
+## Deploying to AWS Glue
+```bash
+# Upload script to S3
+aws s3 cp src/main/job.py s3://your-bucket/scripts/
+
+# Upload config to S3
+aws s3 cp config/glue_params.yaml s3://your-bucket/config/
+
+# Create Glue job (example)
+aws glue create-job \
+  --name "minimal-glue-job" \
+  --role "AWSGlueServiceRole" \
+  --command "Name=glueetl,ScriptLocation=s3://your-bucket/scripts/job.py,PythonVersion=3" \
+  --default-arguments '{
+    "--config_path":"s3://your-bucket/config/glue_params.yaml",
+    "--enable-metrics":"true",
+    "--enable-spark-ui":"true",
+    "--enable-job-insights":"true"
+  }' \
+  --glue-version "4.0" \
+  --number-of-workers 2 \
+  --worker-type "G.1X"
 ```
 
 ## Testing
-Run unit tests:
 ```bash
-python -m pytest src/test/test_job.py -v
+# Run all tests
+pytest src/test/ -v --cov=src/main
+
+# Run specific test
+pytest src/test/test_job.py::test_main_execution -v
 ```
 
-## Data Flow
-1. **Ingest**: Read customer and order CSV files from S3
-2. **Clean**: Remove nulls and duplicates
-3. **Catalog**: Write cleaned data to S3 and register in Glue Catalog
-4. **Detect Changes**: Compare current customers with previous snapshot
-5. **SCD Type 2**: Join and upsert order summary with historical tracking
-6. **Aggregate**: Calculate total spending per customer
-7. **Snapshot**: Save current customer state for next run
+## Next Steps
+1. **Add Actual Requirements**: Update this template with real FRD/TRD requirements
+2. **Define Schemas**: Add input/output data schemas
+3. **Implement Transformations**: Add business logic
+4. **Configure S3 Paths**: Set actual S3 bucket paths
+5. **Add Data Quality Checks**: Implement validation rules
+6. **Enhance Testing**: Add comprehensive test cases
 
-## Schema Definitions
+## Notes
+- This template uses AWS Glue pre-initialized contexts (spark, glueContext, sc)
+- No SparkContext/SparkSession creation in main code
+- Sample data included for local testing
+- Pytest fixtures handle context creation for tests
 
-### Customer Schema
-- CustId (String)
-- Name (String)
-- EmailId (String)
-- Region (String)
-
-### Order Schema
-- OrderId (String)
-- ItemName (String)
-- PricePerUnit (Double)
-- Qty (Long)
-- Date (String, YYYY-MM-DD)
-- CustId (String)
-
-### Order Summary Schema (SCD Type 2)
-- CustId (String)
-- OrderId (String)
-- Name (String)
-- EmailId (String)
-- Region (String)
-- ItemName (String)
-- PricePerUnit (Double)
-- Qty (Long)
-- Date (String)
-- TotalAmount (Double)
-- IsActive (Boolean)
-- StartDate (Timestamp)
-- EndDate (Timestamp)
-- OpTs (Timestamp)
+## Support
+For issues or questions, refer to AWS Glue documentation:
+https://docs.aws.amazon.com/glue/

@@ -1,0 +1,73 @@
+# AWS Glue Job Parameters
+# NOTE: This is a TEMPLATE - Update with actual requirements
+
+job_name: "minimal-glue-job-template"
+description: "Minimal AWS Glue job - awaiting actual requirements"
+
+# Input Configuration
+input:
+  # Example S3 path - UPDATE WITH ACTUAL PATH
+  source_path: "s3://your-bucket/input/data/"
+  format: "csv"
+  options:
+    header: "true"
+    inferSchema: "true"
+    delimiter: ","
+
+# Output Configuration
+output:
+  # Example S3 path - UPDATE WITH ACTUAL PATH
+  target_path: "s3://your-bucket/output/data/"
+  format: "parquet"
+  mode: "overwrite"
+  partition_by: []
+
+# Glue Catalog Configuration
+catalog:
+  database_name: "default"
+  table_name: "sample_table"
+  create_table: true
+
+# Processing Configuration
+processing:
+  # Data quality checks
+  enable_data_quality: true
+  drop_duplicates: true
+  drop_null_columns: []
+
+  # Performance tuning
+  repartition: 10
+  cache_intermediate: false
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  enable_metrics: true
+  enable_continuous_logging: true
+
+# Job Bookmarks (for incremental processing)
+job_bookmark:
+  enabled: false
+  transformation_ctx: "datasource0"
+
+# Spark Configuration
+spark_config:
+  spark.sql.adaptive.enabled: "true"
+  spark.sql.adaptive.coalescePartitions.enabled: "true"
+  spark.sql.sources.partitionOverwriteMode: "dynamic"
+
+# Environment-specific overrides
+environments:
+  dev:
+    input:
+      source_path: "s3://dev-bucket/input/data/"
+    output:
+      target_path: "s3://dev-bucket/output/data/"
+
+  prod:
+    input:
+      source_path: "s3://prod-bucket/input/data/"
+    output:
+      target_path: "s3://prod-bucket/output/data/"
+    processing:
+      repartition: 50

@@ -1,349 +1,414 @@
+"""
+AWS Glue PySpark Job - Minimal Template
+
+⚠️ IMPORTANT: This is a TEMPLATE implementation because the source FRD/TRD
+contains NO REQUIREMENTS IDENTIFIED.
+
+This code demonstrates:
+1. Proper AWS Glue context handling (using pre-initialized contexts)
+2. Parameter loading from YAML and command-line
+3. Basic data processing pipeline structure
+4. Error handling and logging
+5. Sample data generation for testing
+
+UPDATE THIS CODE with actual requirements when available.
+"""
+
 import sys
 import os
+import logging
 from datetime import datetime
-from decimal import Decimal
+from typing import Dict, Any, Optional
 
-try:
-    from awsglue.transforms import *
-    from awsglue.utils import getResolvedOptions
-    from awsglue.context import GlueContext
-    from awsglue.job import Job
-    GLUE_AVAILABLE = True
-except ImportError:
-    GLUE_AVAILABLE = False
+# AWS Glue imports
+from awsglue.utils import getResolvedOptions
+from awsglue.context import GlueContext
+from awsglue.job import Job
 
+# PySpark imports
 from pyspark.context import SparkContext
-from pyspark.sql import SparkSession
+from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
-    col, lit, current_timestamp, to_date,
-    sum as spark_sum, count as spark_count
+    col, current_timestamp, lit, when,
+    trim, upper, lower, regexp_replace
 )
-from pyspark.sql.types import (
-    StructType, StructField, StringType, DecimalType,
-    IntegerType, DateType, BooleanType, TimestampType
-)
+
+# Standard library
 import yaml
 
 
-REQUIRED_KEYS = [
-    'customer_input_path',
-    'order_input_path',
-    'customer_catalog_path',
-    'order_catalog_path',
-    'ordersummary_hudi_path',
-    'customer_aggregate_path',
-    'database_name',
-    'customer_table_name',
-    'order_table_name',
-    'ordersummary_table_name'
-]
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 
-def load_yaml_defaults():
-    """Load default parameters from YAML config file."""
-    config_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        '..',
-        'config',
-        'glue_params.yaml'
-    )
-
-    if os.path.exists(config_path):
-        with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
-            return config.get('args', {})
-    return {}
-
-
-def get_job_parameters():
+def load_config(config_path: str) -> Dict[str, Any]:
     """
-    Get job parameters with dual-mode support:
-    - In AWS Glue: Load YAML defaults, then override with Glue args
-    - Locally: Load YAML defaults only
-    """
-    defaults = load_yaml_defaults()
+    Load configuration from YAML file.
 
-    if GLUE_AVAILABLE and '--JOB_NAME' in sys.argv:
-        keys_in_argv = [key for key in REQUIRED_KEYS if f'--{key}' in sys.argv]
+    Args:
+        config_path: Path to YAML configuration file
 
-        if keys_in_argv:
-            glue_args = getResolvedOptions(sys.argv, keys_in_argv)
-            defaults.update(glue_args)
-
-    missing_keys = [key for key in REQUIRED_KEYS if key not in defaults]
-    if missing_keys:
-        raise ValueError(f"Missing required parameters: {', '.join(missing_keys)}")
-
-    return defaults
-
-
-def clean_dataframe(df):
-    """
-    Remove rows with NULL values or 'Null' string values.
-    Remove duplicate records based on all columns.
-    """
-    for column in df.columns:
-        df = df.filter(
-            (col(column).isNotNull()) &
-            (col(column) != 'Null')
-        )
-
-    df = df.dropDuplicates()
-
-    return df
-
-
-def read_customer_data(spark, input_path):
-    """Read and parse customer CSV data from S3."""
-    customer_schema = StructType([
-        StructField("CustId", StringType(), True),
-        StructField("Name", StringType(), True),
-        StructField("EmailId", StringType(), True),
-        StructField("Region", StringType(), True)
-    ])
-
-    df = spark.read.format("csv") \
-        .option("header", "true") \
-        .schema(customer_schema) \
-        .load(input_path)
-
-    return df
-
-
-def read_order_data(spark, input_path):
-    """Read and parse order CSV data from S3."""
-    order_schema = StructType([
-        StructField("OrderId", StringType(), True),
-        StructField("ItemName", StringType(), True),
-        StructField("PricePerUnit", StringType(), True),
-        StructField("Qty", StringType(), True),
-        StructField("Date", StringType(), True),
-        StructField("CustId", StringType(), True)
-    ])
-
-    df = spark.read.format("csv") \
-        .option("header", "true") \
-        .schema(order_schema) \
-        .load(input_path)
-
-    return df
-
-
-def transform_order_data(df):
-    """Transform order data with proper data types."""
-    df = df.withColumn("PricePerUnit", col("PricePerUnit").cast(DecimalType(10, 2))) \
-           .withColumn("Qty", col("Qty").cast(IntegerType())) \
-           .withColumn("Date", to_date(col("Date")))
-
-    return df
-
-
-def write_to_catalog(df, output_path, database_name, table_name, glue_context=None):
-    """Write DataFrame to S3 and register in Glue Data Catalog."""
-    df.write.mode("overwrite") \
-        .format("parquet") \
-        .save(output_path)
-
-    if glue_context and GLUE_AVAILABLE:
-        try:
-            glue_context.create_dynamic_frame.from_catalog(
-                database=database_name,
-                table_name=table_name
-            )
-        except Exception:
-            pass
-
-
-def get_changed_customers(spark, new_customer_df, catalog_path):
-    """
-    Identify customers that have changed by comparing with existing catalog.
-    Returns list of CustIds that have changes.
+    Returns:
+        Dictionary containing configuration parameters
     """
     try:
-        existing_df = spark.read.format("parquet").load(catalog_path)
+        logger.info(f"Loading configuration from: {config_path}")
 
-        new_customer_df.createOrReplaceTempView("new_customers")
-        existing_df.createOrReplaceTempView("existing_customers")
+        # Handle S3 paths
+        if config_path.startswith('s3://'):
+            import boto3
+            s3 = boto3.client('s3')
+            bucket, key = config_path.replace('s3://', '').split('/', 1)
+            obj = s3.get_object(Bucket=bucket, Key=key)
+            config_content = obj['Body'].read().decode('utf-8')
+            config = yaml.safe_load(config_content)
+        else:
+            # Local file
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
 
-        changed_query = """
-        SELECT DISTINCT n.CustId
-        FROM new_customers n
-        LEFT JOIN existing_customers e ON n.CustId = e.CustId
-        WHERE e.CustId IS NULL
-           OR n.Name != e.Name
-           OR n.EmailId != e.EmailId
-           OR n.Region != e.Region
-        """
+        logger.info("Configuration loaded successfully")
+        return config
 
-        changed_df = spark.sql(changed_query)
-        changed_cust_ids = [row.CustId for row in changed_df.collect()]
-
-        return changed_cust_ids
-    except Exception:
-        return []
+    except Exception as e:
+        logger.error(f"Failed to load configuration: {str(e)}")
+        # Return default configuration
+        logger.warning("Using default configuration")
+        return get_default_config()
 
 
-def prepare_ordersummary_for_hudi(order_df, changed_cust_ids):
+def get_default_config() -> Dict[str, Any]:
     """
-    Prepare order summary data with SCD Type 2 fields.
-    Filter to only orders for changed customers if changes exist.
+    Return default configuration when config file is not available.
+
+    Returns:
+        Dictionary with default parameters
     """
-    if changed_cust_ids:
-        order_df = order_df.filter(col("CustId").isin(changed_cust_ids))
-
-    current_ts = current_timestamp()
-
-    ordersummary_df = order_df.withColumn("IsActive", lit(True)) \
-                               .withColumn("StartDate", current_ts) \
-                               .withColumn("EndDate", lit(None).cast(TimestampType())) \
-                               .withColumn("OpTs", current_ts)
-
-    return ordersummary_df
-
-
-def write_hudi_table(df, hudi_path, table_name, database_name):
-    """Write DataFrame to S3 using Hudi format with SCD Type 2 configuration."""
-    hudi_options = {
-        'hoodie.table.name': table_name,
-        'hoodie.datasource.write.recordkey.field': 'OrderId',
-        'hoodie.datasource.write.precombine.field': 'OpTs',
-        'hoodie.datasource.write.operation': 'upsert',
-        'hoodie.datasource.write.table.type': 'COPY_ON_WRITE',
-        'hoodie.datasource.write.hive_style_partitioning': 'false',
-        'hoodie.datasource.hive_sync.enable': 'true',
-        'hoodie.datasource.hive_sync.database': database_name,
-        'hoodie.datasource.hive_sync.table': table_name,
-        'hoodie.datasource.hive_sync.mode': 'hms',
-        'hoodie.datasource.hive_sync.partition_extractor_class': 'org.apache.hudi.hive.NonPartitionedExtractor'
+    return {
+        'job_name': 'minimal-glue-job',
+        'input': {
+            'source_path': 's3://default-bucket/input/',
+            'format': 'csv',
+            'options': {
+                'header': 'true',
+                'inferSchema': 'true'
+            }
+        },
+        'output': {
+            'target_path': 's3://default-bucket/output/',
+            'format': 'parquet',
+            'mode': 'overwrite'
+        },
+        'processing': {
+            'drop_duplicates': True,
+            'repartition': 10
+        },
+        'logging': {
+            'level': 'INFO'
+        }
     }
 
-    df.write.format("hudi") \
-        .options(**hudi_options) \
-        .mode("append") \
-        .save(hudi_path)
 
-
-def generate_customer_aggregate(spark, ordersummary_path, output_path):
+def read_data(spark: SparkSession, config: Dict[str, Any]) -> DataFrame:
     """
-    Generate customer aggregate spend analytics.
-    Aggregates from active records in order summary.
+    Read data from source based on configuration.
+
+    NOTE: This is a TEMPLATE implementation. Update with actual source details.
+
+    Args:
+        spark: SparkSession instance
+        config: Configuration dictionary
+
+    Returns:
+        DataFrame containing source data
     """
-    ordersummary_df = spark.read.format("hudi").load(ordersummary_path)
+    try:
+        source_path = config['input']['source_path']
+        source_format = config['input']['format']
+        options = config['input'].get('options', {})
 
-    active_orders = ordersummary_df.filter(col("IsActive") == True)
+        logger.info(f"Reading data from: {source_path}")
+        logger.info(f"Format: {source_format}")
 
-    active_orders = active_orders.withColumn(
-        "TotalPrice",
-        col("PricePerUnit") * col("Qty")
-    )
+        # Read data based on format
+        if source_format.lower() == 'csv':
+            df = spark.read.csv(
+                source_path,
+                header=options.get('header', 'true') == 'true',
+                inferSchema=options.get('inferSchema', 'true') == 'true'
+            )
+        elif source_format.lower() == 'parquet':
+            df = spark.read.parquet(source_path)
+        elif source_format.lower() == 'json':
+            df = spark.read.json(source_path)
+        else:
+            raise ValueError(f"Unsupported format: {source_format}")
 
-    aggregate_df = active_orders.groupBy("CustId") \
-        .agg(
-            spark_sum("TotalPrice").alias("TotalSpend"),
-            spark_count("OrderId").alias("OrderCount")
+        record_count = df.count()
+        logger.info(f"Successfully read {record_count} records")
+        logger.info(f"Schema: {df.schema}")
+
+        return df
+
+    except Exception as e:
+        logger.error(f"Failed to read data: {str(e)}")
+        raise
+
+
+def transform_data(df: DataFrame, config: Dict[str, Any]) -> DataFrame:
+    """
+    Apply transformations to the data.
+
+    NOTE: This is a TEMPLATE implementation with basic transformations.
+    UPDATE with actual business logic when requirements are available.
+
+    Args:
+        df: Input DataFrame
+        config: Configuration dictionary
+
+    Returns:
+        Transformed DataFrame
+    """
+    try:
+        logger.info("Starting data transformations")
+
+        # Add processing timestamp
+        df_transformed = df.withColumn(
+            'processing_timestamp',
+            current_timestamp()
         )
 
-    aggregate_df.write.mode("overwrite") \
-        .format("parquet") \
-        .save(output_path)
+        # Drop duplicates if configured
+        if config.get('processing', {}).get('drop_duplicates', False):
+            initial_count = df_transformed.count()
+            df_transformed = df_transformed.dropDuplicates()
+            final_count = df_transformed.count()
+            logger.info(f"Dropped {initial_count - final_count} duplicate records")
 
-    return aggregate_df
+        # Example: Clean string columns (trim whitespace, handle nulls)
+        string_columns = [
+            field.name for field in df_transformed.schema.fields
+            if str(field.dataType) == 'StringType'
+        ]
+
+        for col_name in string_columns:
+            df_transformed = df_transformed.withColumn(
+                col_name,
+                when(col(col_name).isNull(), lit(None))
+                .otherwise(trim(col(col_name)))
+            )
+
+        logger.info("Transformations completed successfully")
+        logger.info(f"Output record count: {df_transformed.count()}")
+
+        return df_transformed
+
+    except Exception as e:
+        logger.error(f"Failed to transform data: {str(e)}")
+        raise
+
+
+def write_data(df: DataFrame, config: Dict[str, Any]) -> None:
+    """
+    Write transformed data to target location.
+
+    Args:
+        df: DataFrame to write
+        config: Configuration dictionary
+    """
+    try:
+        target_path = config['output']['target_path']
+        target_format = config['output']['format']
+        write_mode = config['output'].get('mode', 'overwrite')
+        partition_by = config['output'].get('partition_by', [])
+
+        logger.info(f"Writing data to: {target_path}")
+        logger.info(f"Format: {target_format}, Mode: {write_mode}")
+
+        # Repartition if configured
+        repartition_count = config.get('processing', {}).get('repartition')
+        if repartition_count:
+            logger.info(f"Repartitioning to {repartition_count} partitions")
+            df = df.repartition(repartition_count)
+
+        # Write data
+        writer = df.write.mode(write_mode)
+
+        if partition_by:
+            logger.info(f"Partitioning by: {partition_by}")
+            writer = writer.partitionBy(*partition_by)
+
+        if target_format.lower() == 'parquet':
+            writer.parquet(target_path)
+        elif target_format.lower() == 'csv':
+            writer.option('header', 'true').csv(target_path)
+        elif target_format.lower() == 'json':
+            writer.json(target_path)
+        else:
+            raise ValueError(f"Unsupported format: {target_format}")
+
+        logger.info("Data written successfully")
+
+    except Exception as e:
+        logger.error(f"Failed to write data: {str(e)}")
+        raise
+
+
+def register_table(
+    glueContext: GlueContext,
+    df: DataFrame,
+    config: Dict[str, Any]
+) -> None:
+    """
+    Register DataFrame as a table in AWS Glue Catalog.
+
+    Args:
+        glueContext: GlueContext instance
+        df: DataFrame to register
+        config: Configuration dictionary
+    """
+    try:
+        catalog_config = config.get('catalog', {})
+
+        if not catalog_config.get('create_table', False):
+            logger.info("Table registration disabled in configuration")
+            return
+
+        database_name = catalog_config.get('database_name', 'default')
+        table_name = catalog_config.get('table_name', 'sample_table')
+
+        logger.info(f"Registering table: {database_name}.{table_name}")
+
+        # Convert to DynamicFrame
+        from awsglue.dynamicframe import DynamicFrame
+        dynamic_frame = DynamicFrame.fromDF(df, glueContext, "dynamic_frame")
+
+        # Write to Glue Catalog
+        glueContext.write_dynamic_frame.from_catalog(
+            frame=dynamic_frame,
+            database=database_name,
+            table_name=table_name
+        )
+
+        logger.info("Table registered successfully")
+
+    except Exception as e:
+        logger.error(f"Failed to register table: {str(e)}")
+        # Don't raise - table registration is optional
+        logger.warning("Continuing without table registration")
 
 
 def main():
-    """Main execution function for the Glue job."""
-    args = get_job_parameters()
+    """
+    Main execution function for AWS Glue job.
 
-    if GLUE_AVAILABLE:
-        sc = SparkContext.getOrCreate()
-        glue_context = GlueContext(sc)
-        spark = glue_context.spark_session
-        job = Job(glue_context)
+    ⚠️ CRITICAL: Uses AWS Glue pre-initialized contexts (spark, glueContext, sc)
+    DO NOT create new SparkContext or SparkSession in AWS Glue environment.
+    """
+    # Declare global contexts (pre-initialized by AWS Glue)
+    global spark, glueContext, sc
 
-        if '--JOB_NAME' in sys.argv:
-            job_name_args = getResolvedOptions(sys.argv, ['JOB_NAME'])
-            job.init(job_name_args['JOB_NAME'], args)
-    else:
-        spark = SparkSession.builder \
-            .appName("CustomerOrderProcessing") \
-            .getOrCreate()
-        glue_context = None
-        job = None
+    logger.info("=" * 80)
+    logger.info("AWS Glue Job Started - Minimal Template")
+    logger.info("⚠️  WARNING: This is a TEMPLATE - No actual requirements provided")
+    logger.info("=" * 80)
 
-    print("Starting Customer Order Processing Pipeline")
-    print(f"Parameters: {args}")
+    job = None
 
-    print("Reading customer data...")
-    customer_df = read_customer_data(spark, args['customer_input_path'])
+    try:
+        # Get job parameters
+        try:
+            args = getResolvedOptions(
+                sys.argv,
+                ['JOB_NAME', 'config_path']
+            )
+            job_name = args['JOB_NAME']
+            config_path = args['config_path']
+        except Exception:
+            # Fallback for local testing
+            logger.warning("Running in local mode - using default parameters")
+            job_name = "local-test-job"
 
-    print("Cleaning customer data...")
-    customer_clean_df = clean_dataframe(customer_df)
+            # Calculate config path relative to script location
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            config_path = os.path.join(
+                os.path.dirname(os.path.dirname(script_dir)),
+                'config',
+                'glue_params.yaml'
+            )
 
-    print("Reading order data...")
-    order_df = read_order_data(spark, args['order_input_path'])
+        logger.info(f"Job Name: {job_name}")
+        logger.info(f"Config Path: {config_path}")
 
-    print("Cleaning order data...")
-    order_clean_df = clean_dataframe(order_df)
+        # Load configuration
+        config = load_config(config_path)
 
-    print("Transforming order data...")
-    order_transformed_df = transform_order_data(order_clean_df)
+        # Check if contexts exist (AWS Glue environment)
+        try:
+            _ = sc.version
+            logger.info("Using AWS Glue pre-initialized contexts")
+        except NameError:
+            # Local testing - create contexts
+            logger.info("Creating contexts for local testing")
+            sc = SparkContext()
+            glueContext = GlueContext(sc)
+            spark = glueContext.spark_session
 
-    print("Identifying changed customers...")
-    changed_cust_ids = get_changed_customers(
-        spark,
-        customer_clean_df,
-        args['customer_catalog_path']
-    )
-    print(f"Found {len(changed_cust_ids)} changed customers")
+        # Initialize Glue job
+        job = Job(glueContext)
+        job.init(job_name, args if 'args' in locals() else {})
 
-    print("Writing customer data to catalog...")
-    write_to_catalog(
-        customer_clean_df,
-        args['customer_catalog_path'],
-        args['database_name'],
-        args['customer_table_name'],
-        glue_context
-    )
+        # Execute data pipeline
+        logger.info("Starting data pipeline execution")
 
-    print("Writing order data to catalog...")
-    write_to_catalog(
-        order_transformed_df,
-        args['order_catalog_path'],
-        args['database_name'],
-        args['order_table_name'],
-        glue_context
-    )
+        # Step 1: Read data
+        logger.info("Step 1: Reading source data")
+        df_source = read_data(spark, config)
 
-    print("Preparing order summary for Hudi...")
-    ordersummary_df = prepare_ordersummary_for_hudi(
-        order_transformed_df,
-        changed_cust_ids
-    )
+        # Step 2: Transform data
+        logger.info("Step 2: Transforming data")
+        df_transformed = transform_data(df_source, config)
 
-    if ordersummary_df.count() > 0:
-        print("Writing order summary to Hudi...")
-        write_hudi_table(
-            ordersummary_df,
-            args['ordersummary_hudi_path'],
-            args['ordersummary_table_name'],
-            args['database_name']
-        )
+        # Step 3: Write data
+        logger.info("Step 3: Writing output data")
+        write_data(df_transformed, config)
 
-        print("Generating customer aggregate spend...")
-        aggregate_df = generate_customer_aggregate(
-            spark,
-            args['ordersummary_hudi_path'],
-            args['customer_aggregate_path']
-        )
+        # Step 4: Register table (optional)
+        logger.info("Step 4: Registering table in Glue Catalog")
+        register_table(glueContext, df_transformed, config)
 
-        print(f"Customer aggregate records: {aggregate_df.count()}")
-    else:
-        print("No order summary records to process")
+        # Commit job
+        if job:
+            job.commit()
 
-    if job:
-        job.commit()
+        logger.info("=" * 80)
+        logger.info("AWS Glue Job Completed Successfully")
+        logger.info("=" * 80)
 
-    print("Pipeline completed successfully")
+    except Exception as e:
+        logger.error("=" * 80)
+        logger.error(f"AWS Glue Job Failed: {str(e)}")
+        logger.error("=" * 80)
+
+        if job:
+            job.commit()
+
+        raise
+
+    finally:
+        # Cleanup (only for local testing)
+        if 'sc' in locals() and hasattr(sc, 'stop'):
+            try:
+                # Check if we created the context (local mode)
+                if not hasattr(sys.modules[__name__], 'spark'):
+                    logger.info("Stopping Spark context (local mode)")
+                    sc.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping Spark context: {str(e)}")
 
 
 if __name__ == "__main__":
