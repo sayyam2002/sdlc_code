@@ -1,0 +1,51 @@
+# AWS Glue Job Parameters
+# These parameters are used when running the job in AWS Glue environment
+
+job_parameters:
+  # Job identification
+  JOB_NAME: "customer_order_scd2_job"
+
+  # Source S3 paths (TRD Section: Data Sources)
+  customer_source_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
+  order_source_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
+
+  # Curated output paths (TRD Section: Output Paths)
+  curated_customer_path: "s3://adif-sdlc/curated/sdlc_wizard/customer/"
+  curated_order_path: "s3://adif-sdlc/curated/sdlc_wizard/order/"
+  curated_ordersummary_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
+
+  # Analytics output paths (TRD Section: Analytics)
+  analytics_customeraggregatespend_path: "s3://adif-sdlc/analytics/customeraggregatespend/"
+
+  # AWS Glue Catalog configuration
+  glue_database: "sdlc_wizard_db"
+  glue_customer_table: "customer"
+  glue_order_table: "order"
+  glue_ordersummary_table: "ordersummary"
+  glue_customeraggregatespend_table: "customeraggregatespend"
+
+  # Data processing parameters
+  encoding: "UTF-8"
+  header: "true"
+  inferSchema: "true"
+
+  # Hudi configuration for SCD Type 2
+  hudi_customer_table_name: "customer_hudi"
+  hudi_order_table_name: "order_hudi"
+  hudi_record_key_customer: "CustId"
+  hudi_record_key_order: "OrderId"
+  hudi_precombine_field: "OpTs"
+  hudi_operation: "upsert"
+  hudi_table_type: "COPY_ON_WRITE"
+
+  # Logging
+  log_level: "INFO"
+
+# Local testing parameters (override for local development)
+local_parameters:
+  customer_source_path: "./sample_data/customer/"
+  order_source_path: "./sample_data/order/"
+  curated_customer_path: "./output/curated/customer/"
+  curated_order_path: "./output/curated/order/"
+  curated_ordersummary_path: "./output/curated/ordersummary/"
+  analytics_customeraggregatespend_path: "./output/analytics/customeraggregatespend/"
