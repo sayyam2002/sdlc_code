@@ -1,0 +1,178 @@
+# AWS Glue Job Parameters Configuration
+# This file defines all configurable parameters for the ETL job
+
+job_config:
+  job_name: "customer_order_etl_scd2"
+  glue_version: "4.0"
+  worker_type: "G.1X"
+  number_of_workers: 5
+  max_retries: 1
+  timeout_minutes: 60
+
+# S3 Path Configuration (from TRD)
+s3_paths:
+  # Input paths
+  customer_input: "s3://adif-sdlc/sdlc_wizard/customerdata/"
+  order_input: "s3://adif-sdlc/sdlc_wizard/orderdata/"
+
+  # Output paths
+  aggregate_output: "s3://adif-sdlc/analytics/customeraggregatespend/"
+  curated_output: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
+  athena_results: "s3://adif-sdlc/athena-results/"
+
+  # Temporary paths
+  temp_dir: "s3://adif-sdlc/temp/"
+  checkpoint_dir: "s3://adif-sdlc/checkpoints/"
+
+# AWS Glue Catalog Configuration
+glue_catalog:
+  database_name: "sdlc_wizard_db"
+  tables:
+    customer_aggregate: "customer_aggregate_spend"
+    order_summary: "order_summary_curated"
+
+# Schema Definitions (from TRD)
+schemas:
+  customer:
+    columns:
+      - name: "custid"
+        type: "string"
+        nullable: false
+      - name: "name"
+        type: "string"
+        nullable: false
+      - name: "emailid"
+        type: "string"
+        nullable: false
+      - name: "region"
+        type: "string"
+        nullable: false
+
+  order:
+    columns:
+      - name: "orderid"
+        type: "string"
+        nullable: false
+      - name: "itemname"
+        type: "string"
+        nullable: false
+      - name: "priceperunit"
+        type: "double"
+        nullable: false
+      - name: "qty"
+        type: "integer"
+        nullable: false
+      - name: "date"
+        type: "string"
+        nullable: false
+      - name: "custid"
+        type: "string"
+        nullable: false
+
+# SCD Type 2 Configuration (from TRD)
+scd_type2:
+  enabled: true
+  columns:
+    is_active: "isactive"
+    start_date: "startdate"
+    end_date: "enddate"
+    operation_timestamp: "opts"
+  default_end_date: "9999-12-31 23:59:59"
+
+# Hudi Configuration
+hudi:
+  table_type: "COPY_ON_WRITE"
+  operation: "upsert"
+  record_key_field: "custid"
+  precombine_field: "opts"
+  partition_fields: "region"
+  hive_sync_enabled: true
+  hive_partition_fields: "region"
+  hive_partition_extractor_class: "org.apache.hudi.hive.MultiPartKeysValueExtractor"
+
+# Data Cleaning Rules (from TRD)
+data_cleaning:
+  remove_nulls: true
+  remove_null_strings: true  # Remove 'Null' as string
+  remove_duplicates: true
+  null_string_values:
+    - "Null"
+    - "NULL"
+    - "null"
+    - "None"
+    - "NONE"
+    - ""
+
+# Aggregation Configuration (from TRD)
+aggregation:
+  customer_spend:
+    group_by:
+      - "custid"
+      - "name"
+      - "emailid"
+      - "region"
+    aggregations:
+      - column: "totalamount"
+        function: "sum"
+        alias: "totalspend"
+      - column: "orderid"
+        function: "count"
+        alias: "ordercount"
+
+# Spark Configuration
+spark_config:
+  spark.sql.adaptive.enabled: "true"
+  spark.sql.adaptive.coalescePartitions.enabled: "true"
+  spark.sql.shuffle.partitions: "200"
+  spark.serializer: "org.apache.spark.serializer.KryoSerializer"
+  spark.sql.hive.convertMetastoreParquet: "false"
+  spark.sql.sources.partitionOverwriteMode: "dynamic"
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  enable_cloudwatch: true
+  cloudwatch_log_group: "/aws-glue/jobs/customer_order_etl_scd2"
+
+# Monitoring & Alerting
+monitoring:
+  enable_metrics: true
+  enable_spark_ui: true
+  metrics:
+    - "glue.driver.aggregate.numCompletedTasks"
+    - "glue.driver.aggregate.numFailedTasks"
+    - "glue.driver.BlockManager.disk.diskSpaceUsed_MB"
+    - "glue.driver.ExecutorAllocationManager.executors.numberAllExecutors"
+
+# Data Quality Checks
+data_quality:
+  enabled: true
+  checks:
+    - name: "customer_record_count"
+      type: "row_count"
+      threshold: 0
+      operator: ">"
+    - name: "order_record_count"
+      type: "row_count"
+      threshold: 0
+      operator: ">"
+    - name: "null_custid_check"
+      type: "null_check"
+      columns: ["custid"]
+      threshold: 0
+    - name: "duplicate_check"
+      type: "duplicate_check"
+      columns: ["custid", "orderid"]
+
+# Environment-specific overrides
+environments:
+  dev:
+    number_of_workers: 2
+    s3_paths:
+      customer_input: "s3://adif-sdlc/dev/sdlc_wizard/customerdata/"
+      order_input: "s3://adif-sdlc/dev/sdlc_wizard/orderdata/"
+
+  prod:
+    number_of_workers: 10
+    timeout_minutes: 120
