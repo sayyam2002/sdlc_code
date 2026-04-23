@@ -1,87 +1,274 @@
-# AWS Glue PySpark Job - Customer Order Processing
+# AWS Glue PySpark ETL Job
 
 ## Overview
-This AWS Glue PySpark job processes customer and order data with the following capabilities:
-- Ingests customer and order CSV files from S3
-- Cleans data by removing nulls and duplicates
-- Registers cleaned data in AWS Glue Data Catalog
-- Implements SCD Type 2 for order summary using Apache Hudi
-- Performs incremental processing based on customer changes
-- Calculates customer aggregate spending
+Production-ready AWS Glue PySpark job implementing:
+- Data ingestion from multiple sources
+- Data quality validation and cleansing
+- SCD Type 2 implementation using Apache Hudi
+- Comprehensive error handling and logging
+- Full test coverage with pytest
 
 ## Architecture
-- **Source Data**: CSV files in S3
-- **Processing**: AWS Glue PySpark with DataFrame API
-- **Storage**: Apache Hudi (Copy-on-Write) for SCD Type 2
-- **Catalog**: AWS Glue Data Catalog for Athena querying
-- **Output**: Parquet and Hudi formats
 
-## Job Parameters
-The job accepts the following runtime arguments:
-
-- `--customer_source_path`: S3 path for customer CSV files (default: s3://adif-sdlc/sdlc_wizard/customerdata/)
-- `--order_source_path`: S3 path for order CSV files (default: s3://adif-sdlc/sdlc_wizard/orderdata/)
-- `--customer_output_path`: S3 path for cleaned customer data (default: s3://adif-sdlc/curated/sdlc_wizard/customer/)
-- `--order_output_path`: S3 path for cleaned order data (default: s3://adif-sdlc/curated/sdlc_wizard/order/)
-- `--ordersummary_output_path`: S3 path for order summary Hudi table (default: s3://adif-sdlc/curated/sdlc_wizard/ordersummary/)
-- `--customer_snapshot_path`: S3 path for customer snapshot (default: s3://adif-sdlc/curated/sdlc_wizard/customer_snapshot/)
-- `--aggregate_output_path`: S3 path for customer aggregate spend (default: s3://adif-sdlc/analytics/customeraggregatespend/)
-- `--database_name`: Glue catalog database name (required)
-- `--customer_table_name`: Customer table name (default: customer)
-- `--order_table_name`: Order table name (default: order)
-- `--ordersummary_table_name`: Order summary table name (default: ordersummary)
-- `--aggregate_table_name`: Aggregate table name (default: customeraggregatespend)
-
-## Execution
-```bash
-aws glue start-job-run \
-  --job-name <job-name> \
-  --arguments='--database_name=<database>,--customer_source_path=s3://...'
+### Data Flow
 ```
+S3 Raw Data → Glue Job → Data Validation → Transformation → Hudi SCD Type 2 → S3 Curated
+                ↓
+         Glue Catalog Registration
+```
+
+### Components
+- **job.py**: Main ETL orchestration
+- **glue_params.yaml**: Configuration management
+- **test_job.py**: Comprehensive test suite
+
+## Requirements
+
+### System Requirements
+- Python 3.9+
+- Apache Spark 3.3+
+- AWS Glue 4.0
+- Apache Hudi 0.12+
+
+### Python Dependencies
+```
+pyspark>=3.3.0
+boto3>=1.26.0
+pytest>=7.4.0
+pytest-mock>=3.11.0
+pyyaml>=6.0
+```
+
+## Configuration
+
+### glue_params.yaml
+```yaml
+source_paths:
+  customer_data: s3://data-lake-raw/customers/
+  order_data: s3://data-lake-raw/orders/
+
+target_paths:
+  curated_customer: s3://data-lake-curated/customers/
+  curated_order: s3://data-lake-curated/orders/
+
+glue_catalog:
+  database: curated_db
+  customer_table: dim_customer
+  order_table: fact_order
+```
+
+## Usage
+
+### Local Development
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run tests
+pytest src/test/ -v --cov=src/main --cov-report=html
+
+# Run job locally (with local Spark)
+python src/main/job.py
+```
+
+### AWS Glue Deployment
+```bash
+# Upload to S3
+aws s3 cp src/main/job.py s3://glue-scripts/jobs/
+aws s3 cp config/glue_params.yaml s3://glue-scripts/config/
+
+# Create Glue Job
+aws glue create-job \
+  --name customer-order-etl \
+  --role GlueServiceRole \
+  --command "Name=glueetl,ScriptLocation=s3://glue-scripts/jobs/job.py" \
+  --default-arguments '{
+    "--config_path":"s3://glue-scripts/config/glue_params.yaml",
+    "--enable-glue-datacatalog":"true",
+    "--enable-metrics":"true",
+    "--enable-spark-ui":"true",
+    "--spark-event-logs-path":"s3://glue-logs/spark-events/"
+  }' \
+  --glue-version "4.0" \
+  --number-of-workers 10 \
+  --worker-type "G.1X"
+
+# Run Glue Job
+aws glue start-job-run --job-name customer-order-etl
+```
+
+## Features
+
+### 1. Data Ingestion (FR-INGEST-001)
+- Multi-source data reading (CSV, Parquet, JSON)
+- S3 path validation before read
+- Schema enforcement and validation
+- Automatic column name normalization
+
+### 2. Data Quality (FR-CLEAN-001)
+- Null value handling
+- Duplicate record detection and removal
+- Data type validation
+- Business rule validation
+- Invalid record quarantine
+
+### 3. SCD Type 2 (FR-SCD2-001)
+- Apache Hudi integration
+- Automatic history tracking
+- IsActive flag management
+- StartDate/EndDate tracking
+- OpTs (operation timestamp) tracking
+
+### 4. Error Handling
+- Comprehensive try-catch blocks
+- S3 access validation
+- Schema mismatch detection
+- Data quality failure handling
+- Detailed error logging
+
+### 5. Monitoring & Logging
+- Structured logging with timestamps
+- Job metrics tracking
+- Record count validation
+- Performance monitoring
+- CloudWatch integration
 
 ## Testing
-Run unit tests:
+
+### Test Coverage
+- Unit tests for all transformations
+- Integration tests for data flows
+- Mock AWS services (S3, Glue Catalog)
+- Schema validation tests
+- SCD Type 2 logic tests
+- Error handling tests
+
+### Run Tests
 ```bash
-python -m pytest src/test/test_job.py -v
+# All tests
+pytest src/test/ -v
+
+# With coverage
+pytest src/test/ --cov=src/main --cov-report=html
+
+# Specific test
+pytest src/test/test_job.py::test_customer_data_ingestion -v
+
+# With markers
+pytest src/test/ -m "integration" -v
 ```
 
-## Data Flow
-1. **Ingest**: Read customer and order CSV files from S3
-2. **Clean**: Remove nulls and duplicates
-3. **Catalog**: Write cleaned data to S3 and register in Glue Catalog
-4. **Detect Changes**: Compare current customers with previous snapshot
-5. **SCD Type 2**: Join and upsert order summary with historical tracking
-6. **Aggregate**: Calculate total spending per customer
-7. **Snapshot**: Save current customer state for next run
+## Project Structure
+```
+glue_pyspark/
+├── .gitignore
+├── README.md
+├── requirements.txt
+├── pytest.ini
+├── config/
+│   └── glue_params.yaml
+└── src/
+    ├── __init__.py
+    ├── main/
+    │   ├── __init__.py
+    │   └── job.py
+    └── test/
+        ├── __init__.py
+        └── test_job.py
+```
 
-## Schema Definitions
+## Troubleshooting
 
-### Customer Schema
-- CustId (String)
-- Name (String)
-- EmailId (String)
-- Region (String)
+### Common Issues
 
-### Order Schema
-- OrderId (String)
-- ItemName (String)
-- PricePerUnit (Double)
-- Qty (Long)
-- Date (String, YYYY-MM-DD)
-- CustId (String)
+**Issue**: S3 Access Denied
+```
+Solution: Verify IAM role has s3:GetObject, s3:PutObject permissions
+```
 
-### Order Summary Schema (SCD Type 2)
-- CustId (String)
-- OrderId (String)
-- Name (String)
-- EmailId (String)
-- Region (String)
-- ItemName (String)
-- PricePerUnit (Double)
-- Qty (Long)
-- Date (String)
-- TotalAmount (Double)
-- IsActive (Boolean)
-- StartDate (Timestamp)
-- EndDate (Timestamp)
-- OpTs (Timestamp)
+**Issue**: Glue Catalog Table Not Found
+```
+Solution: Ensure database exists and job has glue:CreateTable permission
+```
+
+**Issue**: Hudi Write Failure
+```
+Solution: Check S3 path permissions and Hudi configuration
+```
+
+## Performance Tuning
+
+### Spark Configuration
+```python
+spark.conf.set("spark.sql.adaptive.enabled", "true")
+spark.conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
+spark.conf.set("spark.sql.files.maxPartitionBytes", "134217728")  # 128MB
+```
+
+### Hudi Optimization
+```python
+hudi_options = {
+    "hoodie.compact.inline": "true",
+    "hoodie.compact.inline.max.delta.commits": "5",
+    "hoodie.cleaner.policy": "KEEP_LATEST_COMMITS",
+    "hoodie.cleaner.commits.retained": "10"
+}
+```
+
+## Monitoring
+
+### CloudWatch Metrics
+- Job duration
+- Records processed
+- Data quality failures
+- S3 read/write operations
+
+### Glue Job Metrics
+- DPU hours consumed
+- Success/failure rate
+- Data processed (GB)
+
+## Security
+
+### IAM Permissions Required
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::data-lake-raw/*",
+        "arn:aws:s3:::data-lake-curated/*"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "glue:GetDatabase",
+        "glue:GetTable",
+        "glue:CreateTable",
+        "glue:UpdateTable"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+## Contributing
+1. Follow PEP 8 style guide
+2. Add tests for new features
+3. Update documentation
+4. Run full test suite before commit
+
+## License
+Proprietary - Internal Use Only
+
+## Support
+Contact: data-engineering-team@company.com

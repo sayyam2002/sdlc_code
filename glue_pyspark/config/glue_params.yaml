@@ -1,0 +1,361 @@
+# AWS Glue Job Configuration
+# Environment: Production
+# Last Updated: 2024-01-15
+
+# Job Metadata
+job_metadata:
+  job_name: customer_order_etl_job
+  version: "1.0.0"
+  description: "ETL job for customer and order data processing with SCD Type 2"
+  owner: "data-engineering-team"
+  schedule: "cron(0 2 * * ? *)"  # Daily at 2 AM UTC
+
+# Source Data Paths
+source_paths:
+  # Customer master data (CSV format)
+  customer_data: "s3://data-lake-raw/customers/landing/"
+
+  # Order transaction data (Parquet format)
+  order_data: "s3://data-lake-raw/orders/landing/"
+
+  # Product reference data (JSON format)
+  product_data: "s3://data-lake-raw/products/landing/"
+
+# Target Data Paths
+target_paths:
+  # Curated customer dimension (Hudi SCD Type 2)
+  curated_customer: "s3://data-lake-curated/dimensions/customer/"
+
+  # Curated order fact table (Hudi)
+  curated_order: "s3://data-lake-curated/facts/order/"
+
+  # Aggregated customer metrics
+  customer_metrics: "s3://data-lake-curated/metrics/customer_summary/"
+
+  # Data quality quarantine
+  quarantine_path: "s3://data-lake-quarantine/failed_records/"
+
+# AWS Glue Catalog Configuration
+glue_catalog:
+  database: "curated_analytics_db"
+
+  tables:
+    customer_dimension: "dim_customer"
+    order_fact: "fact_order"
+    customer_metrics: "agg_customer_metrics"
+
+  partition_keys:
+    customer: ["country", "registration_year"]
+    order: ["order_year", "order_month"]
+
+# Schema Definitions
+schemas:
+  customer_source:
+    columns:
+      - name: "customer_id"
+        type: "string"
+        nullable: false
+        description: "Unique customer identifier"
+      - name: "first_name"
+        type: "string"
+        nullable: false
+      - name: "last_name"
+        type: "string"
+        nullable: false
+      - name: "email"
+        type: "string"
+        nullable: false
+      - name: "phone"
+        type: "string"
+        nullable: true
+      - name: "address"
+        type: "string"
+        nullable: true
+      - name: "city"
+        type: "string"
+        nullable: true
+      - name: "state"
+        type: "string"
+        nullable: true
+      - name: "country"
+        type: "string"
+        nullable: false
+      - name: "postal_code"
+        type: "string"
+        nullable: true
+      - name: "registration_date"
+        type: "timestamp"
+        nullable: false
+      - name: "customer_status"
+        type: "string"
+        nullable: false
+
+  order_source:
+    columns:
+      - name: "order_id"
+        type: "string"
+        nullable: false
+        description: "Unique order identifier"
+      - name: "customer_id"
+        type: "string"
+        nullable: false
+      - name: "order_date"
+        type: "timestamp"
+        nullable: false
+      - name: "order_status"
+        type: "string"
+        nullable: false
+      - name: "total_amount"
+        type: "decimal(10,2)"
+        nullable: false
+      - name: "currency"
+        type: "string"
+        nullable: false
+      - name: "payment_method"
+        type: "string"
+        nullable: true
+      - name: "shipping_address"
+        type: "string"
+        nullable: true
+      - name: "created_at"
+        type: "timestamp"
+        nullable: false
+      - name: "updated_at"
+        type: "timestamp"
+        nullable: true
+
+# Data Quality Rules
+data_quality:
+  customer:
+    rules:
+      - name: "email_format_validation"
+        type: "regex"
+        column: "email"
+        pattern: "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+        action: "quarantine"
+
+      - name: "phone_not_null_if_active"
+        type: "conditional"
+        condition: "customer_status = 'ACTIVE'"
+        column: "phone"
+        action: "quarantine"
+
+      - name: "valid_country_code"
+        type: "whitelist"
+        column: "country"
+        values: ["US", "CA", "UK", "DE", "FR", "AU", "JP"]
+        action: "quarantine"
+
+      - name: "registration_date_range"
+        type: "date_range"
+        column: "registration_date"
+        min_date: "2020-01-01"
+        max_date: "current_date"
+        action: "quarantine"
+
+  order:
+    rules:
+      - name: "positive_amount"
+        type: "numeric_range"
+        column: "total_amount"
+        min_value: 0.01
+        max_value: 1000000
+        action: "quarantine"
+
+      - name: "valid_order_status"
+        type: "whitelist"
+        column: "order_status"
+        values: ["PENDING", "CONFIRMED", "SHIPPED", "DELIVERED", "CANCELLED"]
+        action: "quarantine"
+
+      - name: "valid_currency"
+        type: "whitelist"
+        column: "currency"
+        values: ["USD", "EUR", "GBP", "CAD", "AUD", "JPY"]
+        action: "quarantine"
+
+      - name: "order_date_not_future"
+        type: "date_range"
+        column: "order_date"
+        max_date: "current_date"
+        action: "quarantine"
+
+# Transformation Rules
+transformations:
+  customer:
+    # Column name standardization
+    rename_columns:
+      "customer_id": "customer_key"
+      "registration_date": "registration_timestamp"
+
+    # Derived columns
+    derived_columns:
+      - name: "full_name"
+        expression: "concat(first_name, ' ', last_name)"
+      - name: "registration_year"
+        expression: "year(registration_timestamp)"
+      - name: "customer_age_days"
+        expression: "datediff(current_date(), registration_timestamp)"
+
+    # Data cleansing
+    cleansing:
+      - column: "email"
+        operation: "lowercase"
+      - column: "phone"
+        operation: "remove_special_chars"
+        pattern: "[^0-9]"
+      - column: "postal_code"
+        operation: "trim"
+
+  order:
+    # Column name standardization
+    rename_columns:
+      "order_id": "order_key"
+      "customer_id": "customer_key"
+
+    # Derived columns
+    derived_columns:
+      - name: "order_year"
+        expression: "year(order_date)"
+      - name: "order_month"
+        expression: "month(order_date)"
+      - name: "order_quarter"
+        expression: "quarter(order_date)"
+      - name: "days_since_order"
+        expression: "datediff(current_date(), order_date)"
+
+    # Aggregations for customer metrics
+    aggregations:
+      group_by: ["customer_key"]
+      metrics:
+        - name: "total_orders"
+          expression: "count(*)"
+        - name: "total_revenue"
+          expression: "sum(total_amount)"
+        - name: "avg_order_value"
+          expression: "avg(total_amount)"
+        - name: "first_order_date"
+          expression: "min(order_date)"
+        - name: "last_order_date"
+          expression: "max(order_date)"
+        - name: "customer_lifetime_days"
+          expression: "datediff(max(order_date), min(order_date))"
+
+# SCD Type 2 Configuration (Hudi)
+scd_type2:
+  customer:
+    enabled: true
+    record_key: "customer_key"
+    precombine_field: "updated_at"
+    partition_path: "country,registration_year"
+
+    # SCD Type 2 specific columns
+    scd_columns:
+      is_active: "is_active"
+      start_date: "effective_start_date"
+      end_date: "effective_end_date"
+      operation_timestamp: "op_ts"
+
+    # Hudi configuration
+    hudi_options:
+      table_name: "customer_dimension"
+      table_type: "COPY_ON_WRITE"
+      operation: "upsert"
+
+      # Performance tuning
+      bulk_insert_parallelism: "100"
+      upsert_parallelism: "100"
+      delete_parallelism: "100"
+
+      # Compaction
+      inline_compact: "true"
+      inline_compact_max_delta_commits: "5"
+
+      # Cleaner
+      cleaner_policy: "KEEP_LATEST_COMMITS"
+      cleaner_commits_retained: "10"
+
+      # Index
+      index_type: "BLOOM"
+      bloom_filter_num_entries: "60000"
+      bloom_filter_fpp: "0.000000001"
+
+  order:
+    enabled: true
+    record_key: "order_key"
+    precombine_field: "updated_at"
+    partition_path: "order_year,order_month"
+
+    hudi_options:
+      table_name: "order_fact"
+      table_type: "COPY_ON_WRITE"
+      operation: "upsert"
+      bulk_insert_parallelism: "200"
+      upsert_parallelism: "200"
+
+# Spark Configuration
+spark_config:
+  # Memory settings
+  driver_memory: "4g"
+  executor_memory: "8g"
+  executor_cores: "4"
+
+  # Parallelism
+  default_parallelism: "200"
+  sql_shuffle_partitions: "200"
+
+  # Adaptive Query Execution
+  adaptive_enabled: "true"
+  adaptive_coalesce_partitions: "true"
+
+  # Dynamic allocation
+  dynamic_allocation_enabled: "true"
+  dynamic_allocation_min_executors: "2"
+  dynamic_allocation_max_executors: "20"
+
+  # Optimization
+  files_max_partition_bytes: "134217728"  # 128MB
+  broadcast_timeout: "600"
+
+# Monitoring and Logging
+monitoring:
+  # CloudWatch Logs
+  log_group: "/aws/glue/jobs/customer-order-etl"
+  log_level: "INFO"
+
+  # Metrics
+  enable_metrics: true
+  metrics_namespace: "GlueJobs/CustomerOrderETL"
+
+  # Custom metrics to track
+  custom_metrics:
+    - "records_processed"
+    - "records_quarantined"
+    - "scd2_inserts"
+    - "scd2_updates"
+    - "job_duration_seconds"
+    - "data_quality_pass_rate"
+
+# Error Handling
+error_handling:
+  # Retry configuration
+  max_retries: 3
+  retry_delay_seconds: 60
+
+  # Failure thresholds
+  max_quarantine_percentage: 5.0  # Fail job if >5% records quarantined
+  min_records_threshold: 1  # Fail if no records processed
+
+  # Notifications
+  sns_topic_arn: "arn:aws:sns:us-east-1:123456789012:glue-job-alerts"
+
+  # Failure actions
+  on_failure:
+    - "send_sns_notification"
+    - "log_to_cloudwatch"
+    - "write_failure_manifest"
+
+# Job Bookmarks
+job_bookmarks:
+  enabled: true
+  transformation_context_prefix: "customer_order_etl"
