@@ -1,0 +1,265 @@
+# AWS Glue Job Configuration Parameters
+# Project: Customer Order Analytics with SCD Type 2
+# Environment: SDLC
+
+# ============================================
+# SOURCE DATA PATHS (from TRD)
+# ============================================
+source_paths:
+  # Customer master data
+  customer: "s3://adif-sdlc/curated/sdlc_wizard/customer/"
+
+  # Order transaction data
+  order: "s3://adif-sdlc/curated/sdlc_wizard/order/"
+
+  # Raw data paths (for reference)
+  customer_raw: "s3://adif-sdlc/sdlc_wizard/customerdata/"
+  order_raw: "s3://adif-sdlc/sdlc_wizard/orderdata/"
+
+# ============================================
+# TARGET DATA PATHS (from TRD)
+# ============================================
+target_paths:
+  # Order summary with SCD Type 2
+  order_summary: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
+
+  # Customer aggregate spend analytics
+  customer_aggregate: "s3://adif-sdlc/analytics/customeraggregatespend/"
+
+  # Base analytics path
+  analytics_base: "s3://adif-sdlc/analytics/"
+
+  # Curated base path
+  curated_base: "s3://adif-sdlc/curated/sdlc_wizard/"
+
+  # Athena query results
+  athena_results: "s3://adif-sdlc/athena-results/"
+
+# ============================================
+# AWS GLUE CATALOG CONFIGURATION
+# ============================================
+glue_catalog:
+  # Database name in Glue Catalog
+  database: "sdlc_wizard_db"
+
+  # Table names
+  tables:
+    customer: "customer"
+    order: "order"
+    order_summary: "order_summary"
+    customer_aggregate_spend: "customer_aggregate_spend"
+
+  # Catalog ID (AWS Account ID, leave empty for default)
+  catalog_id: ""
+
+# ============================================
+# HUDI CONFIGURATION (SCD Type 2)
+# ============================================
+hudi_config:
+  # Table type: COPY_ON_WRITE or MERGE_ON_READ
+  table_type: "COPY_ON_WRITE"
+
+  # Write operation: upsert, insert, bulk_insert
+  operation: "upsert"
+
+  # Precombine field for deduplication
+  precombine_field: "OpTs"
+
+  # Partitioning
+  partition_fields: ""
+
+  # Hudi table names
+  table_names:
+    order_summary: "order_summary_hudi"
+    customer_aggregate: "customer_aggregate_hudi"
+
+  # Record keys
+  record_keys:
+    order: "order_id"
+    customer: "customer_id"
+    customer_aggregate: "customer_id"
+
+  # Hudi write options
+  write_options:
+    hoodie.datasource.write.table.type: "COPY_ON_WRITE"
+    hoodie.datasource.write.operation: "upsert"
+    hoodie.datasource.write.payload.class: "org.apache.hudi.common.model.DefaultHoodieRecordPayload"
+    hoodie.combine.before.upsert: "true"
+    hoodie.cleaner.policy: "KEEP_LATEST_COMMITS"
+    hoodie.cleaner.commits.retained: "10"
+
+# ============================================
+# SCD TYPE 2 CONFIGURATION
+# ============================================
+scd_type2:
+  # SCD Type 2 column names
+  columns:
+    is_active: "IsActive"
+    start_date: "StartDate"
+    end_date: "EndDate"
+    operation_timestamp: "OpTs"
+
+  # Default values
+  defaults:
+    active_flag: true
+    inactive_flag: false
+    null_end_date: null
+    max_end_date: "9999-12-31 23:59:59"
+
+# ============================================
+# DATA CLEANING RULES
+# ============================================
+data_cleaning:
+  # Remove NULL values in key fields
+  remove_nulls: true
+
+  # Remove 'Null' string values
+  remove_null_strings: true
+
+  # Remove duplicate records
+  remove_duplicates: true
+
+  # Key fields that cannot be NULL
+  required_fields:
+    customer:
+      - "customer_id"
+      - "customer_name"
+      - "email"
+    order:
+      - "order_id"
+      - "customer_id"
+      - "order_date"
+      - "order_amount"
+
+  # String values to treat as NULL
+  null_string_values:
+    - "Null"
+    - "NULL"
+    - "null"
+    - "None"
+    - "NONE"
+    - "none"
+    - ""
+    - " "
+
+# ============================================
+# AGGREGATION CONFIGURATION
+# ============================================
+aggregation:
+  # Customer aggregate spend metrics
+  customer_metrics:
+    - name: "total_orders"
+      function: "count"
+      column: "order_id"
+
+    - name: "total_spend"
+      function: "sum"
+      column: "order_amount"
+
+    - name: "avg_order_value"
+      function: "avg"
+      column: "order_amount"
+
+    - name: "first_order_date"
+      function: "min"
+      column: "order_date"
+
+    - name: "last_order_date"
+      function: "max"
+      column: "order_date"
+
+# ============================================
+# SPARK CONFIGURATION
+# ============================================
+spark_config:
+  # Application name
+  app_name: "CustomerOrderSCD2ETL"
+
+  # Spark SQL settings
+  sql:
+    adaptive_enabled: true
+    adaptive_coalesce_partitions: true
+    shuffle_partitions: 200
+
+  # Serialization
+  serializer: "org.apache.spark.serializer.KryoSerializer"
+
+  # Memory settings
+  memory:
+    driver_memory: "4g"
+    executor_memory: "4g"
+    executor_cores: 2
+
+  # Logging
+  log_level: "INFO"
+
+# ============================================
+# JOB EXECUTION PARAMETERS
+# ============================================
+job_execution:
+  # Enable/disable stages
+  stages:
+    ingestion: true
+    cleaning: true
+    scd2_processing: true
+    aggregation: true
+    catalog_registration: true
+
+  # Retry configuration
+  retry:
+    max_attempts: 3
+    backoff_seconds: 60
+
+  # Validation
+  validation:
+    enable_schema_validation: true
+    enable_data_quality_checks: true
+    fail_on_validation_error: true
+
+# ============================================
+# DATA QUALITY THRESHOLDS
+# ============================================
+data_quality:
+  # Minimum record count thresholds
+  min_records:
+    customer: 1
+    order: 1
+
+  # Maximum NULL percentage allowed
+  max_null_percentage: 10.0
+
+  # Maximum duplicate percentage allowed
+  max_duplicate_percentage: 5.0
+
+# ============================================
+# MONITORING AND LOGGING
+# ============================================
+monitoring:
+  # CloudWatch log group
+  log_group: "/aws/glue/customer-order-scd2-etl"
+
+  # Enable detailed logging
+  detailed_logging: true
+
+  # Metrics to track
+  metrics:
+    - "records_read"
+    - "records_written"
+    - "records_cleaned"
+    - "records_deduplicated"
+    - "job_duration"
+    - "data_quality_score"
+
+# ============================================
+# ENVIRONMENT-SPECIFIC OVERRIDES
+# ============================================
+environments:
+  dev:
+    source_paths:
+      customer: "s3://adif-sdlc/curated/sdlc_wizard/customer/"
+      order: "s3://adif-sdlc/curated/sdlc_wizard/order/"
+
+  prod:
+    source_paths:
+      customer: "s3://adif-prod/curated/sdlc_wizard/customer/"
+      order: "s3://adif-prod/curated/sdlc_wizard/order/"

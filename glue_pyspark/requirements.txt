@@ -1,4 +1,47 @@
+# AWS Glue PySpark Dependencies
+# Compatible with AWS Glue 4.0 (Spark 3.3.0, Python 3.10)
+
+# Core AWS Libraries
+boto3==1.28.85
+botocore==1.31.85
+awswrangler==3.4.0
+
+# PySpark (provided by Glue, but needed for local development)
 pyspark==3.3.0
+
+# Apache Hudi (for SCD Type 2)
+# Note: Hudi jars are provided by Glue, this is for local development
+hudi-spark3.3-bundle==0.14.0
+
+# Configuration Management
+PyYAML==6.0.1
+python-dotenv==1.0.0
+
+# Data Processing
+pandas==2.0.3
+numpy==1.24.3
+pyarrow==12.0.1
+
+# Testing
 pytest==7.4.3
+pytest-cov==4.1.0
 pytest-mock==3.12.0
-pyyaml==6.0
+moto==4.2.9
+moto[s3]==4.2.9
+moto[glue]==4.2.9
+
+# Code Quality
+black==23.12.0
+flake8==6.1.0
+pylint==3.0.3
+
+# Utilities
+python-dateutil==2.8.2
+pytz==2023.3
+
+# Logging
+colorlog==6.8.0
+
+# Type Checking
+mypy==1.7.1
+types-PyYAML==6.0.12.12
