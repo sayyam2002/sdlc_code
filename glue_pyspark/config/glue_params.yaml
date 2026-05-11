@@ -1,0 +1,155 @@
+# AWS Glue Job Configuration Parameters
+# Based on FRD/TRD Requirements
+
+job_name: "customer-order-analytics-scd2"
+glue_version: "4.0"
+worker_type: "G.1X"
+number_of_workers: 5
+
+# AWS Configuration
+aws:
+  region: "us-east-1"
+  glue_database: "sdlc_wizard_db"
+
+# S3 Paths - Extracted from TRD
+s3_paths:
+  # Input paths
+  customer_data_input: "s3://adif-sdlc/sdlc_wizard/customerdata/"
+  order_data_input: "s3://adif-sdlc/sdlc_wizard/orderdata/"
+
+  # Output paths
+  customer_data_scd2: "s3://adif-sdlc/sdlc_wizard/customerdata/"
+  customer_aggregate_spend: "s3://adif-sdlc/analytics/customeraggregatespend/"
+  order_summary: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
+
+  # Athena results (for queries if needed)
+  athena_results: "s3://adif-sdlc/athena-results/"
+
+# Schema Definitions - Extracted from TRD
+schemas:
+  customer:
+    columns:
+      - name: "CustId"
+        type: "string"
+      - name: "Name"
+        type: "string"
+      - name: "EmailId"
+        type: "string"
+      - name: "Region"
+        type: "string"
+    encoding: "UTF-8"
+    delimiter: ","
+    header: true
+
+  order:
+    columns:
+      - name: "OrderId"
+        type: "string"
+      - name: "ItemName"
+        type: "string"
+      - name: "PricePerUnit"
+        type: "decimal(10,2)"
+      - name: "Qty"
+        type: "integer"
+      - name: "Date"
+        type: "string"
+    encoding: "UTF-8"
+    delimiter: ","
+    header: true
+
+# SCD Type 2 Configuration - From TRD
+scd_type2:
+  enabled: true
+  record_key: "CustId"
+  precombine_field: "OpTs"
+  columns:
+    is_active: "IsActive"
+    start_date: "StartDate"
+    end_date: "EndDate"
+    operation_timestamp: "OpTs"
+
+# Hudi Configuration - From TRD
+hudi:
+  table_type: "COPY_ON_WRITE"
+  operation: "upsert"
+  customer_table:
+    table_name: "customer_scd2"
+    record_key_field: "CustId"
+    precombine_field: "OpTs"
+    partition_fields: ""
+
+# Data Cleaning Rules - From TRD TR-INGEST-002
+data_cleaning:
+  remove_nulls: true
+  remove_null_strings: true  # Remove 'Null' as string
+  remove_duplicates: true
+  null_string_values:
+    - "Null"
+    - "NULL"
+    - "null"
+    - "None"
+    - "NONE"
+
+# Aggregation Configuration
+aggregations:
+  customer_spend:
+    enabled: true
+    group_by: ["CustId", "Name"]
+    metrics:
+      - name: "TotalSpend"
+        expression: "sum(PricePerUnit * Qty)"
+
+# Output Format Configuration
+output_formats:
+  customer_aggregate_spend:
+    format: "parquet"
+    mode: "overwrite"
+    partition_by: []
+
+  order_summary:
+    format: "parquet"
+    mode: "overwrite"
+    partition_by: []
+
+  customer_scd2:
+    format: "hudi"
+    mode: "append"
+
+# Job Execution Parameters
+execution:
+  enable_glue_catalog: true
+  enable_job_bookmark: true
+  enable_metrics: true
+  enable_continuous_cloudwatch_log: true
+  log_level: "INFO"
+
+# Performance Tuning
+performance:
+  shuffle_partitions: 200
+  broadcast_threshold: 10485760  # 10MB
+  adaptive_execution: true
+  coalesce_output_files: true
+  output_file_count: 10
+
+# Data Quality Checks
+data_quality:
+  enabled: true
+  checks:
+    - name: "customer_id_not_null"
+      column: "CustId"
+      rule: "not_null"
+    - name: "order_id_not_null"
+      column: "OrderId"
+      rule: "not_null"
+    - name: "price_positive"
+      column: "PricePerUnit"
+      rule: "greater_than_zero"
+    - name: "qty_positive"
+      column: "Qty"
+      rule: "greater_than_zero"
+
+# Retry Configuration
+retry:
+  max_attempts: 3
+  backoff_multiplier: 2
+  initial_delay_seconds: 60

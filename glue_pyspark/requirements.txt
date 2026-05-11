@@ -1,4 +1,34 @@
-pyspark==3.3.0
+# AWS Glue PySpark Job Requirements
+
+# Core PySpark (provided by AWS Glue runtime)
+# pyspark==3.3.0  # Provided by Glue 4.0
+
+# AWS SDK
+boto3==1.28.85
+botocore==1.31.85
+
+# Testing Framework
 pytest==7.4.3
+pytest-cov==4.1.0
 pytest-mock==3.12.0
-pyyaml==6.0
+moto==4.2.9
+
+# Data Validation
+pydantic==2.5.0
+
+# YAML Configuration
+PyYAML==6.0.1
+
+# Utilities
+python-dateutil==2.8.2
+
+# Type Hints
+typing-extensions==4.8.0
+
+# Development Tools
+black==23.11.0
+flake8==6.1.0
+pylint==3.0.2
+
+# Note: Apache Hudi libraries are provided by AWS Glue runtime
+# No need to install separately for Glue 4.0
