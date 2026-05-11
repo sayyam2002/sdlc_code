@@ -1,0 +1,190 @@
+# AWS Glue Job Parameters Configuration
+# SDLC Wizard Data Pipeline
+
+# Job Metadata
+job_name: "sdlc-wizard-pipeline"
+job_description: "Data pipeline for SDLC Wizard with SCD Type 2 implementation"
+glue_version: "4.0"
+python_version: "3"
+
+# AWS Configuration
+aws:
+  region: "us-east-1"
+  glue_database: "sdlc_wizard"
+
+# S3 Paths - Source Data
+source_paths:
+  customer_data: "s3://adif-sdlc/sdlc_wizard/customerdata/"
+  order_data: "s3://adif-sdlc/sdlc_wizard/orderdata/"
+
+# S3 Paths - Output Data
+output_paths:
+  customer_catalog: "s3://adif-sdlc/catalog/sdlc_wizard_customer/"
+  order_catalog: "s3://adif-sdlc/catalog/sdlc_wizard_order/"
+  order_summary: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
+  customer_aggregate_spend: "s3://adif-sdlc/analytics/customeraggregatespend/"
+
+# Glue Catalog Tables
+glue_catalog_tables:
+  customer_table: "sdlc_wizard_customer"
+  order_table: "sdlc_wizard_order"
+
+# Data Schemas
+schemas:
+  customer:
+    primary_key: "customer_id"
+    columns:
+      - customer_id
+      - customer_name
+      - email
+      - phone
+      - address
+      - city
+      - state
+      - zip_code
+      - registration_date
+      - customer_status
+
+  order:
+    primary_key: "order_id"
+    foreign_key: "customer_id"
+    columns:
+      - order_id
+      - customer_id
+      - order_date
+      - order_amount
+      - order_status
+      - product_id
+      - quantity
+      - payment_method
+
+# SCD Type 2 Configuration
+scd_type2:
+  enabled: true
+  columns:
+    is_active: "IsActive"
+    start_date: "StartDate"
+    end_date: "EndDate"
+    operation_timestamp: "OpTs"
+  default_end_date: "9999-12-31 23:59:59"
+
+# Hudi Configuration
+hudi:
+  customer_table:
+    table_name: "sdlc_wizard_customer_hudi"
+    record_key: "customer_id"
+    precombine_key: "OpTs"
+    partition_path: "registration_date"
+    operation: "upsert"
+    table_type: "COPY_ON_WRITE"
+
+  order_table:
+    table_name: "sdlc_wizard_order_hudi"
+    record_key: "order_id"
+    precombine_key: "order_date"
+    partition_path: "order_date"
+    operation: "upsert"
+    table_type: "COPY_ON_WRITE"
+
+# Data Cleaning Rules
+data_cleaning:
+  remove_nulls: true
+  remove_null_strings: true
+  null_string_values:
+    - "Null"
+    - "NULL"
+    - "null"
+    - "None"
+    - "NONE"
+  remove_duplicates: true
+  critical_fields:
+    customer:
+      - customer_id
+      - customer_name
+      - email
+    order:
+      - order_id
+      - customer_id
+      - order_amount
+
+# Aggregation Configuration
+aggregations:
+  customer_spend:
+    group_by: "customer_id"
+    metrics:
+      - total_spend: "sum(order_amount)"
+      - order_count: "count(order_id)"
+      - avg_spend_per_order: "avg(order_amount)"
+
+  order_summary:
+    group_by: "customer_id"
+    metrics:
+      - total_orders: "count(order_id)"
+      - total_amount: "sum(order_amount)"
+      - avg_order_amount: "avg(order_amount)"
+      - first_order_date: "min(order_date)"
+      - last_order_date: "max(order_date)"
+
+# Spark Configuration
+spark:
+  app_name: "SDLC-Wizard-Pipeline"
+  executor_memory: "4g"
+  executor_cores: 2
+  driver_memory: "2g"
+  shuffle_partitions: 200
+  dynamic_allocation: true
+
+# Job Parameters
+job_parameters:
+  enable_job_bookmark: true
+  enable_metrics: true
+  enable_continuous_cloudwatch_log: true
+  job_timeout_minutes: 60
+  max_concurrent_runs: 1
+  max_retries: 2
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  cloudwatch_log_group: "/aws-glue/jobs/sdlc-wizard-pipeline"
+
+# Data Quality Checks
+data_quality:
+  enabled: true
+  checks:
+    customer:
+      - name: "customer_id_not_null"
+        column: "customer_id"
+        rule: "not_null"
+      - name: "email_format"
+        column: "email"
+        rule: "email_format"
+    order:
+      - name: "order_amount_positive"
+        column: "order_amount"
+        rule: "greater_than_zero"
+      - name: "order_date_valid"
+        column: "order_date"
+        rule: "valid_date"
+
+# Performance Tuning
+performance:
+  cache_intermediate_results: true
+  broadcast_threshold: "10MB"
+  partition_size_mb: 128
+  coalesce_output_partitions: true
+  output_partition_count: 10
+
+# Error Handling
+error_handling:
+  continue_on_error: false
+  error_output_path: "s3://adif-sdlc/errors/sdlc_wizard/"
+  max_error_records: 100
+  send_failure_notification: true
+
+# Testing Configuration
+testing:
+  sample_data_path: "sample_data/"
+  test_output_path: "test_output/"
+  mock_aws_services: true
