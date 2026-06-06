@@ -1,0 +1,92 @@
+# AWS Glue Job Parameters Configuration
+
+job_name: "customer_order_processing_job"
+
+# Input Sources
+inputs:
+  customer:
+    source_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
+    source_format: "csv"
+    options:
+      header: "true"
+      inferSchema: "false"
+      delimiter: ","
+      encoding: "UTF-8"
+
+  order:
+    source_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
+    source_format: "csv"
+    options:
+      header: "true"
+      inferSchema: "false"
+      delimiter: ","
+      encoding: "UTF-8"
+
+# Output Targets
+outputs:
+  customer_curated:
+    target_path: "s3://adif-sdlc/curated/sdlc_wizard/customer/"
+    target_format: "parquet"
+    mode: "overwrite"
+    partition_by: []
+
+  order_curated:
+    target_path: "s3://adif-sdlc/curated/sdlc_wizard/order/"
+    target_format: "parquet"
+    mode: "overwrite"
+    partition_by: []
+
+  order_summary:
+    target_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
+    target_format: "parquet"
+    mode: "overwrite"
+    partition_by: []
+
+  customer_aggregate_spend:
+    target_path: "s3://adif-sdlc/analytics/customeraggregatespend/"
+    target_format: "parquet"
+    mode: "overwrite"
+    partition_by: []
+
+# AWS Glue Data Catalog
+catalog:
+  database_name: "gen_ai_poc_databrickscoe"
+  tables:
+    customer: "sdlc_wizard_customer"
+    order: "sdlc_wizard_order"
+    order_summary: "sdlc_wizard_ordersummary"
+    customer_aggregate: "customer_aggregate_spend"
+
+# Apache Hudi Configuration for SCD Type 2
+hudi:
+  enabled: true
+  table_type: "COPY_ON_WRITE"
+  operation: "upsert"
+  record_key: "CustId"
+  precombine_field: "OpTs"
+  partition_path: ""
+  checkpoint_path: "s3://adif-sdlc/checkpoints/customer_baseline/"
+  hive_sync:
+    enabled: true
+    mode: "hms"
+
+# Data Quality Rules
+data_quality:
+  remove_nulls: true
+  remove_null_strings: true
+  remove_duplicates: true
+  null_string_values:
+    - "Null"
+    - "NULL"
+    - "null"
+
+# Logging
+logging:
+  level: "INFO"
+  enable_metrics: true
+
+# Spark Configuration
+spark_config:
+  spark.sql.adaptive.enabled: "true"
+  spark.sql.adaptive.coalescePartitions.enabled: "true"
+  spark.serializer: "org.apache.spark.serializer.KryoSerializer"
