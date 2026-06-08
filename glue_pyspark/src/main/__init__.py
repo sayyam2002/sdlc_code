@@ -1,7 +1,7 @@
 """
-AWS Glue PySpark Job - Customer and Order Data Processing
-Main package initialization
+Customer Order Pipeline - Main Package
+AWS Glue PySpark Job for Customer and Order Data Processing
 """
 
 __version__ = "1.0.0"
-__author__ = "AWS Glue Job Generator"
+__author__ = "Data Engineering Team"

@@ -1,92 +1,43 @@
-# AWS Glue Job Parameters Configuration
+# AWS Glue Job Parameters for Customer Order Pipeline
 
-job_name: "customer_order_processing_job"
+# Customer Data Ingestion
+customer_source_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
+customer_source_format: "csv"
 
-# Input Sources
-inputs:
-  customer:
-    source_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
-    source_format: "csv"
-    options:
-      header: "true"
-      inferSchema: "false"
-      delimiter: ","
-      encoding: "UTF-8"
+# Order Data Ingestion
+order_source_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
+order_source_format: "csv"
 
-  order:
-    source_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
-    source_format: "csv"
-    options:
-      header: "true"
-      inferSchema: "false"
-      delimiter: ","
-      encoding: "UTF-8"
+# Curated Layer Output
+curated_target_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
+curated_target_format: "parquet"
 
-# Output Targets
-outputs:
-  customer_curated:
-    target_path: "s3://adif-sdlc/curated/sdlc_wizard/customer/"
-    target_format: "parquet"
-    mode: "overwrite"
-    partition_by: []
+# Analytics Layer Output
+analytics_target_path: "s3://adif-sdlc/analytics/customeraggregatespend/"
+analytics_target_format: "parquet"
 
-  order_curated:
-    target_path: "s3://adif-sdlc/curated/sdlc_wizard/order/"
-    target_format: "parquet"
-    mode: "overwrite"
-    partition_by: []
+# Glue Data Catalog
+catalog_database: "sdlc_wizard_db"
+customer_table_name: "customer_cleaned"
+order_table_name: "order_cleaned"
+scd_table_name: "customer_scd"
+aggregate_table_name: "customeraggregatespend"
 
-  order_summary:
-    target_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
-    target_format: "parquet"
-    mode: "overwrite"
-    partition_by: []
+# Hudi Configuration
+hudi_table_name: "customer_scd_hudi"
+hudi_base_path: "s3://adif-sdlc/curated/sdlc_wizard/customer_scd/"
+hudi_record_key: "CustId"
+hudi_precombine_key: "OpTs"
+hudi_table_type: "COPY_ON_WRITE"
+hudi_operation: "upsert"
 
-  customer_aggregate_spend:
-    target_path: "s3://adif-sdlc/analytics/customeraggregatespend/"
-    target_format: "parquet"
-    mode: "overwrite"
-    partition_by: []
+# Processing Options
+enable_data_quality: true
+enable_deduplication: true
+enable_null_removal: true
 
-# AWS Glue Data Catalog
-catalog:
-  database_name: "gen_ai_poc_databrickscoe"
-  tables:
-    customer: "sdlc_wizard_customer"
-    order: "sdlc_wizard_order"
-    order_summary: "sdlc_wizard_ordersummary"
-    customer_aggregate: "customer_aggregate_spend"
-
-# Apache Hudi Configuration for SCD Type 2
-hudi:
-  enabled: true
-  table_type: "COPY_ON_WRITE"
-  operation: "upsert"
-  record_key: "CustId"
-  precombine_field: "OpTs"
-  partition_path: ""
-  checkpoint_path: "s3://adif-sdlc/checkpoints/customer_baseline/"
-  hive_sync:
-    enabled: true
-    mode: "hms"
-
-# Data Quality Rules
-data_quality:
-  remove_nulls: true
-  remove_null_strings: true
-  remove_duplicates: true
-  null_string_values:
-    - "Null"
-    - "NULL"
-    - "null"
-
-# Logging
-logging:
-  level: "INFO"
-  enable_metrics: true
-
-# Spark Configuration
-spark_config:
-  spark.sql.adaptive.enabled: "true"
-  spark.sql.adaptive.coalescePartitions.enabled: "true"
-  spark.serializer: "org.apache.spark.serializer.KryoSerializer"
+# CSV Read Options
+csv_header: true
+csv_delimiter: ","
+csv_encoding: "UTF-8"
+csv_infer_schema: false
