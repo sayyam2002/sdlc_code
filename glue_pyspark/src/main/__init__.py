@@ -1,7 +1,4 @@
 """
-AWS Glue PySpark ETL Job - Customer Order Processing
-Main package initialization
+AWS Glue PySpark ETL Pipeline - Main Package
 """
-
 __version__ = "1.0.0"
-__author__ = "AWS Glue ETL"

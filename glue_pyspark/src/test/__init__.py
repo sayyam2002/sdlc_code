@@ -1,5 +1,3 @@
 """
-Test package for AWS Glue PySpark ETL Job
+AWS Glue PySpark ETL Pipeline - Test Package
 """
-
-__version__ = "1.0.0"

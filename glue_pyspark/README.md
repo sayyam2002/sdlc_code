@@ -1,35 +1,26 @@
-# AWS Glue PySpark ETL Job - Customer Order Processing
+# AWS Glue PySpark ETL Pipeline - Customer Order Analytics
 
 ## Overview
 This AWS Glue PySpark job implements a complete ETL pipeline for customer and order data processing with the following capabilities:
 - Ingests customer and order CSV data from S3
-- Performs data quality transformations (null removal, deduplication)
-- Implements SCD Type 2 using Apache Hudi for customer dimension tracking
-- Calculates customer aggregate spending analytics
-- Registers tables in AWS Glue Data Catalog for Athena querying
+- Performs data quality operations (null removal, deduplication)
+- Registers cleaned data to AWS Glue Data Catalog
+- Implements SCD Type 2 using Apache Hudi for customer baseline tracking
+- Generates customer aggregate spend analytics
+- Implements incremental processing with change data capture
 
 ## Architecture
+```
+S3 Source (CSV) → Glue Job → Data Cleaning → Catalog Registration → Hudi SCD2 → Analytics Aggregation → S3 Target
+```
 
-### Data Flow
-1. **Ingestion**: Read customer and order CSV files from S3
-2. **Cleaning**: Remove null values ("Null" strings and actual NULLs) and duplicates
-3. **Catalog Registration**: Write cleaned data to Glue Data Catalog
-4. **SCD Type 2**: Detect customer changes and maintain history using Hudi
-5. **Aggregation**: Join customer and order data, calculate spending metrics
-6. **Output**: Write results to S3 and Glue Data Catalog
-
-### S3 Paths
-- **Customer Data**: `s3://adif-sdlc/sdlc_wizard/customerdata/`
-- **Order Data**: `s3://adif-sdlc/sdlc_wizard/orderdata/`
-- **Curated Output**: `s3://adif-sdlc/curated/*`
-- **Customer State**: `s3://adif-sdlc/state/customer_previous/`
-- **Analytics Output**: `s3://adif-sdlc/analytics/customeraggregatespend/`
-
-### Glue Catalog Tables
-- `sdlc_wizard_customer` - Cleaned customer data
-- `sdlc_wizard_order` - Cleaned order data
-- `ordersummary` - SCD Type 2 customer dimension (Hudi format)
-- `customeraggregatespend` - Customer spending aggregations
+## Data Flow
+1. **Ingestion**: Load customer and order CSV files from S3
+2. **Cleaning**: Remove nulls and duplicates
+3. **Catalog**: Register tables in Glue Data Catalog
+4. **Baseline**: Maintain customer baseline with SCD Type 2 (Hudi)
+5. **Analytics**: Calculate customer aggregate spend
+6. **Output**: Write results to S3 in Parquet format
 
 ## Project Structure
 ```
@@ -51,100 +42,66 @@ glue_pyspark/
 ```
 
 ## Configuration
-
-### glue_params.yaml
-Contains all configurable parameters:
+All job parameters are defined in `config/glue_params.yaml`:
 - S3 input/output paths
-- Database and table names
-- Schema definitions
+- Glue catalog database and table names
 - Hudi configuration
 - Processing options
 
-## Schemas
+## Prerequisites
+- AWS Glue 3.0 or higher
+- Python 3.7+
+- Apache Hudi libraries
+- IAM role with permissions for S3, Glue Catalog, and CloudWatch
 
-### Customer Schema
-| Column | Type | Nullable |
-|--------|------|----------|
-| CustId | String | No |
-| Name | String | Yes |
-| EmailId | String | Yes |
-| Region | String | Yes |
-
-### Order Schema
-| Column | Type | Nullable |
-|--------|------|----------|
-| OrderId | String | No |
-| CustId | String | No |
-| OrderDate | String | Yes |
-| Amount | String | Yes |
-
-### SCD Type 2 Schema (ordersummary)
-Adds tracking columns:
-- `IsActive` (Boolean)
-- `StartDate` (Timestamp)
-- `EndDate` (Timestamp)
-- `OpTs` (Timestamp)
+## Installation
+```bash
+pip install -r requirements.txt
+```
 
 ## Running the Job
 
-### AWS Glue Console
-1. Upload `src/main/job.py` to S3
-2. Create Glue job pointing to the script
-3. Configure job parameters from `glue_params.yaml`
-4. Run the job
-
 ### Local Testing
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Run tests
 python -m pytest src/test/test_job.py -v
 ```
 
-## Data Quality Rules
-- Remove records with "Null" string literal (case-sensitive)
-- Remove records with actual NULL values
-- Remove duplicate records (full row comparison)
-- Validate schema on read
+### AWS Glue Deployment
+1. Upload `src/main/job.py` to S3
+2. Create Glue job with script location
+3. Configure job parameters from `glue_params.yaml`
+4. Run the job
 
-## SCD Type 2 Logic
-- **Initial Load**: All records created as active (IsActive=true, EndDate=null)
-- **Change Detection**: Compare all attributes except CustId
-- **Update Process**:
-  - Expire changed records (IsActive=false, EndDate=current timestamp)
-  - Insert new versions (IsActive=true, StartDate=current timestamp)
-- **State Management**: Previous customer data stored in `s3://adif-sdlc/state/customer_previous/`
+## Sample Data
+Sample CSV files are provided in `sample_data/` directory:
+- `customer_sample.csv`: Customer master data
+- `order_sample.csv`: Order transaction data
 
-## Aggregation Logic
-- Join customer and order data on CustId
-- Calculate total spending per customer per date
-- Output to analytics S3 location and Glue catalog
+## Key Features
+- **Bulletproof S3 Access**: Validates S3 paths before operations
+- **Safe Read/Write**: Wrapped operations with error handling
+- **Column Normalization**: Lowercase column names for consistency
+- **SCD Type 2**: Historical tracking with IsActive, StartDate, EndDate
+- **Incremental Processing**: CDC pattern for efficient updates
+- **Comprehensive Testing**: Full test coverage with mocked I/O
+
+## Output Tables
+1. **customer** (Curated): Cleaned customer data
+2. **order** (Curated): Cleaned order data
+3. **customer_baseline** (State): SCD Type 2 customer history
+4. **ordersummary** (Curated): Order summary with customer details
+5. **customeraggregatespend** (Analytics): Customer spending aggregates
 
 ## Monitoring
-- CloudWatch logs automatically captured by Glue
-- Job metrics available in Glue console
-- Athena queries enabled via catalog registration
+- CloudWatch logs for job execution
+- Glue job metrics for performance monitoring
+- Data quality metrics in job output
 
-## Dependencies
-- PySpark (provided by Glue)
-- AWS Glue libraries (provided by Glue)
-- PyYAML for configuration parsing
+## Troubleshooting
+- Check CloudWatch logs for detailed error messages
+- Verify S3 bucket permissions
+- Ensure Glue catalog database exists
+- Validate Hudi library availability
 
-## Testing
-Comprehensive test suite covering:
-- Spark context initialization
-- Data ingestion with schema validation
-- Null and duplicate removal
-- Column normalization
-- SCD Type 2 transformations
-- Aggregation logic
-- Catalog registration
-
-Tests use mocked Spark I/O to avoid real filesystem operations.
-
-## Notes
-- All timestamps use UTC timezone
-- OpTs uses job execution start time
-- Hudi format enables time-travel queries in Athena
-- Incremental processing requires state management
+## License
+Proprietary - Internal Use Only
