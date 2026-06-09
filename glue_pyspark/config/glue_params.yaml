@@ -1,61 +1,58 @@
 # AWS Glue Job Parameters Configuration
 
-# Input Sources
-inputs:
-  customer:
-    source_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
-    source_format: "csv"
-  order:
-    source_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
-    source_format: "csv"
+# Customer Data Source
+customer_source_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
+customer_source_format: "csv"
+customer_source_options:
+  header: "true"
+  inferSchema: "true"
+  delimiter: ","
 
-# Output Targets
-outputs:
-  customer:
-    target_path: "s3://adif-sdlc/curated/sdlc_wizard/customer/"
-    target_format: "parquet"
-  order:
-    target_path: "s3://adif-sdlc/curated/sdlc_wizard/order/"
-    target_format: "parquet"
-  ordersummary:
-    target_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
-    target_format: "hudi"
-  customeraggregatespend:
-    target_path: "s3://adif-sdlc/analytics/customeraggregatespend/"
-    target_format: "parquet"
+# Order Data Source
+order_source_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
+order_source_format: "csv"
+order_source_options:
+  header: "true"
+  inferSchema: "true"
+  delimiter: ","
 
-# AWS Glue Data Catalog
-catalog:
-  database: "sdlc_wizard_db"
-  tables:
-    customer: "sdlc_wizard_customer"
-    order: "sdlc_wizard_order"
-    ordersummary: "ordersummary"
-    customeraggregatespend: "customeraggregatespend"
+# Customer Data Target
+customer_target_path: "s3://adif-sdlc/catalog/sdlc_wizard/customer/"
+customer_target_format: "parquet"
+customer_target_mode: "overwrite"
 
-# Hudi Configuration for SCD Type 2
-hudi:
-  table_name: "ordersummary"
-  record_key: "CustId,OrderId"
-  precombine_field: "OpTs"
-  table_type: "COPY_ON_WRITE"
-  operation: "upsert"
-  partition_fields: ""
-  index_type: "GLOBAL_BLOOM"
+# Order Data Target
+order_target_path: "s3://adif-sdlc/catalog/sdlc_wizard/order/"
+order_target_format: "parquet"
+order_target_mode: "overwrite"
+
+# Customer Aggregate Spend Target
+aggregate_target_path: "s3://adif-sdlc/analytics/customeraggregatespend/"
+aggregate_target_format: "parquet"
+aggregate_target_mode: "overwrite"
+
+# AWS Glue Catalog Configuration
+glue_database: "gen_ai_poc_databrickscoe"
+customer_table_name: "customer"
+order_table_name: "order"
+aggregate_table_name: "customeraggregatespend"
+
+# Expected Schemas
+customer_expected_columns:
+  - "custid"
+  - "name"
+  - "emailid"
+  - "region"
+
+order_expected_columns:
+  - "orderid"
+  - "itemname"
+  - "priceperunit"
+  - "qty"
+  - "date"
+  - "custid"
 
 # Processing Options
-processing:
-  enable_scd2: true
-  enable_aggregation: true
-  enable_incremental: true
-  null_string_values:
-    - "Null"
-    - "NULL"
-    - "null"
-
-# Spark Configuration
-spark:
-  app_name: "CustomerOrderETL"
-  log_level: "WARN"
-  temp_path: "s3://adif-sdlc/temp/"
-  spark_logs: "s3://adif-sdlc/spark-logs/"
+enable_data_cleaning: true
+remove_nulls: true
+remove_duplicates: true

@@ -1,7 +1,4 @@
 """
-AWS Glue PySpark ETL Job - Customer Order Analytics
-Main package initialization
+AWS Glue PySpark ETL Job - Main Package
 """
-
 __version__ = "1.0.0"
-__author__ = "Data Engineering Team"

@@ -1,502 +1,580 @@
 """
-AWS Glue PySpark ETL Job - Customer Order Analytics
-Main job implementation with SCD Type 2 support using Apache Hudi
+AWS Glue PySpark ETL Job - Customer and Order Data Processing
+
+This module implements the complete ETL pipeline for customer and order data:
+1. Ingest CSV data from S3
+2. Clean and transform data
+3. Write to Parquet format
+4. Register tables in Glue Catalog
+5. Calculate customer aggregate spending
 """
 
 import sys
-import os
+import logging
 from datetime import datetime
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, List, Optional
 
 import yaml
+from pyspark.context import SparkContext
 from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import (
-    col, lit, when, current_timestamp, to_date,
-    sum as _sum, count, max as _max, min as _min
+from pyspark.sql.functions import col, sum as _sum, lit, when
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from awsglue.utils import getResolvedOptions
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-from pyspark.sql.types import (
-    StructType, StructField, StringType, DecimalType,
-    IntegerType, DateType, BooleanType, TimestampType
-)
+logger = logging.getLogger(__name__)
 
 
-def initialize_spark_contexts() -> Tuple[SparkSession, Any]:
-    """
-    Initialize Spark and Glue contexts with proper configuration.
+class SparkContextManager:
+    """Manages Spark and Glue contexts initialization"""
 
-    Returns:
-        Tuple of (SparkSession, GlueContext)
-    """
-    # Check if running in existing Spark context (test environment)
-    if hasattr(__builtins__, 'spark'):
-        spark = getattr(__builtins__, 'spark')
-        glue_context = None
-        return spark, glue_context
+    @staticmethod
+    def initialize_spark_contexts():
+        """
+        Initialize Spark, Glue contexts and Job
 
-    # Create new Spark session for Glue environment
-    spark = SparkSession.builder \
-        .appName("CustomerOrderETL") \
-        .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
-        .config("spark.sql.hive.convertMetastoreParquet", "false") \
-        .getOrCreate()
+        Returns:
+            tuple: (spark, glueContext, job)
+        """
+        try:
+            # Check if running in Glue environment
+            if 'spark' in dir() and hasattr(sys.modules.get('__main__', None), 'spark'):
+                logger.info("Using existing Spark session from Glue environment")
+                spark = sys.modules['__main__'].spark
+                sc = spark.sparkContext
+            else:
+                logger.info("Creating new Spark session")
+                sc = SparkContext.getOrCreate()
+                spark = SparkSession(sc)
 
-    spark.sparkContext.setLogLevel("WARN")
+            glueContext = GlueContext(sc)
 
-    # Initialize Glue context if available
-    glue_context = None
-    try:
-        from awsglue.context import GlueContext
-        glue_context = GlueContext(spark.sparkContext)
-    except ImportError:
-        print("GlueContext not available - running in local/test mode")
+            # Initialize job if JOB_NAME is available
+            job = None
+            try:
+                args = getResolvedOptions(sys.argv, ['JOB_NAME'])
+                job = Job(glueContext)
+                job.init(args['JOB_NAME'], args)
+                logger.info(f"Initialized Glue job: {args['JOB_NAME']}")
+            except Exception as e:
+                logger.warning(f"Could not initialize Glue job (may be running locally): {e}")
 
-    return spark, glue_context
+            return spark, glueContext, job
 
-
-def get_job_parameters() -> Dict[str, Any]:
-    """
-    Load job parameters from YAML configuration file.
-
-    Returns:
-        Dictionary containing all job parameters
-    """
-    config_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-        'config',
-        'glue_params.yaml'
-    )
-
-    with open(config_path, 'r') as f:
-        params = yaml.safe_load(f)
-
-    return params
+        except Exception as e:
+            logger.error(f"Failed to initialize Spark contexts: {e}")
+            raise
 
 
-def validate_s3_access(spark: SparkSession, s3_path: str) -> bool:
-    """
-    Validate S3 bucket access before operations.
+class ConfigManager:
+    """Manages configuration loading and parameter retrieval"""
 
-    Args:
-        spark: SparkSession instance
-        s3_path: S3 path to validate
+    @staticmethod
+    def load_config(config_path: str = "config/glue_params.yaml") -> Dict[str, Any]:
+        """
+        Load configuration from YAML file
 
-    Returns:
-        True if accessible, False otherwise
-    """
-    try:
-        # Simple validation - check if path is properly formatted
-        if not s3_path.startswith('s3://'):
-            return False
+        Args:
+            config_path: Path to configuration file
 
-        # In production, this would attempt to list the bucket
-        # For now, we assume valid S3 paths are accessible
-        return True
-    except Exception as e:
-        print(f"S3 access validation failed for {s3_path}: {str(e)}")
-        return False
+        Returns:
+            Dictionary containing configuration parameters
+        """
+        try:
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
+            logger.info(f"Successfully loaded configuration from {config_path}")
+            return config
+        except FileNotFoundError:
+            logger.error(f"Configuration file not found: {config_path}")
+            raise
+        except yaml.YAMLError as e:
+            logger.error(f"Failed to parse YAML configuration: {e}")
+            raise
+
+    @staticmethod
+    def get_job_parameters(config_path: str = "config/glue_params.yaml") -> Dict[str, Any]:
+        """
+        Get job parameters from configuration file
+
+        Args:
+            config_path: Path to configuration file
+
+        Returns:
+            Dictionary containing job parameters
+        """
+        return ConfigManager.load_config(config_path)
 
 
-class DataReader:
-    """Helper class for safe data reading operations"""
+class S3DataReader:
+    """Handles reading data from S3"""
 
     def __init__(self, spark: SparkSession):
         self.spark = spark
 
-    def _read_csv(self, path: str, schema: Optional[StructType] = None) -> DataFrame:
-        """Internal method to read CSV files"""
-        reader = self.spark.read.format("csv") \
-            .option("header", "true") \
-            .option("inferSchema", "true" if schema is None else "false")
+    def _read_csv(self, path: str, options: Dict[str, str]) -> DataFrame:
+        """
+        Internal method to read CSV data
 
-        if schema:
-            reader = reader.schema(schema)
+        Args:
+            path: S3 path to CSV files
+            options: Read options
 
-        return reader.load(path)
+        Returns:
+            DataFrame containing the data
+        """
+        return self.spark.read.options(**options).csv(path)
 
-    def _read_parquet(self, path: str) -> DataFrame:
-        """Internal method to read Parquet files"""
-        return self.spark.read.format("parquet").load(path)
+    def read_data_safe(
+        self,
+        path: str,
+        format_type: str,
+        options: Optional[Dict[str, str]] = None,
+        expected_columns: Optional[List[str]] = None
+    ) -> DataFrame:
+        """
+        Safely read data from S3 with validation
 
-    def read_data(self, path: str, format_type: str, schema: Optional[StructType] = None) -> DataFrame:
-        """Public method to read data with format dispatch"""
-        if format_type.lower() == "csv":
-            return self._read_csv(path, schema)
-        elif format_type.lower() == "parquet":
-            return self._read_parquet(path)
-        else:
-            raise ValueError(f"Unsupported format: {format_type}")
+        Args:
+            path: S3 path to data
+            format_type: File format (csv, parquet, etc.)
+            options: Read options
+            expected_columns: List of expected column names
+
+        Returns:
+            DataFrame containing the data
+
+        Raises:
+            Exception: If source path doesn't exist, parsing fails, or schema validation fails
+        """
+        try:
+            logger.info(f"Reading data from {path} in {format_type} format")
+
+            # Validate path exists (basic check)
+            if not path or path.strip() == "":
+                raise ValueError(f"Source path is empty or invalid")
+
+            # Read data based on format
+            if format_type.lower() == "csv":
+                read_options = options or {}
+                df = self._read_csv(path, read_options)
+            elif format_type.lower() == "parquet":
+                df = self.spark.read.parquet(path)
+            else:
+                raise ValueError(f"Unsupported format: {format_type}")
+
+            # Normalize column names to lowercase
+            df = df.toDF(*[c.lower() for c in df.columns])
+
+            # Validate schema if expected columns provided
+            if expected_columns:
+                actual_columns = set(df.columns)
+                expected_columns_lower = set([c.lower() for c in expected_columns])
+
+                if not expected_columns_lower.issubset(actual_columns):
+                    missing_cols = expected_columns_lower - actual_columns
+                    raise ValueError(
+                        f"Schema validation failed. Missing columns: {missing_cols}. "
+                        f"Expected columns: {expected_columns_lower}"
+                    )
+
+            # Get row count
+            row_count = df.count()
+
+            if row_count == 0:
+                logger.warning(f"Successfully loaded 0 rows from {path} (empty file)")
+            else:
+                logger.info(f"Successfully loaded {row_count} rows from {path}")
+
+            return df
+
+        except Exception as e:
+            if "Path does not exist" in str(e) or "FileNotFound" in str(e):
+                error_msg = f"Source path not found: {path}"
+                logger.error(error_msg)
+                raise Exception(error_msg)
+            elif "Schema validation failed" in str(e):
+                logger.error(str(e))
+                raise Exception(str(e))
+            else:
+                error_msg = f"Failed to parse {format_type.upper()} files in source path: {path}"
+                logger.error(f"{error_msg}. Error: {e}")
+                raise Exception(error_msg)
 
 
-class DataWriter:
-    """Helper class for safe data writing operations"""
+class S3DataWriter:
+    """Handles writing data to S3"""
 
     def __init__(self, spark: SparkSession):
         self.spark = spark
 
-    def _write_parquet(self, df: DataFrame, path: str, mode: str = "overwrite") -> None:
-        """Internal method to write Parquet files"""
-        df.write.format("parquet").mode(mode).save(path)
+    def _write_parquet(self, df: DataFrame, path: str, mode: str):
+        """
+        Internal method to write Parquet data
 
-    def _write_csv(self, df: DataFrame, path: str, mode: str = "overwrite") -> None:
-        """Internal method to write CSV files"""
-        df.write.format("csv") \
-            .option("header", "true") \
-            .mode(mode) \
-            .save(path)
+        Args:
+            df: DataFrame to write
+            path: S3 target path
+            mode: Write mode (overwrite, append, etc.)
+        """
+        df.write.mode(mode).parquet(path)
 
-    def _write_hudi(self, df: DataFrame, path: str, hudi_options: Dict[str, str]) -> None:
-        """Internal method to write Hudi tables"""
-        df.write.format("hudi") \
-            .options(**hudi_options) \
-            .mode("append") \
-            .save(path)
+    def _write_csv(self, df: DataFrame, path: str, mode: str, options: Dict[str, str]):
+        """
+        Internal method to write CSV data
 
-    def write_data(self, df: DataFrame, path: str, format_type: str,
-                   mode: str = "overwrite", hudi_options: Optional[Dict[str, str]] = None) -> None:
-        """Public method to write data with format dispatch"""
-        if format_type.lower() == "parquet":
-            self._write_parquet(df, path, mode)
-        elif format_type.lower() == "csv":
-            self._write_csv(df, path, mode)
-        elif format_type.lower() == "hudi":
-            if hudi_options is None:
-                raise ValueError("Hudi options required for Hudi format")
-            self._write_hudi(df, path, hudi_options)
-        else:
-            raise ValueError(f"Unsupported format: {format_type}")
+        Args:
+            df: DataFrame to write
+            path: S3 target path
+            mode: Write mode
+            options: Write options
+        """
+        df.write.mode(mode).options(**options).csv(path)
+
+    def write_data_safe(
+        self,
+        df: DataFrame,
+        path: str,
+        format_type: str,
+        mode: str = "overwrite",
+        options: Optional[Dict[str, str]] = None
+    ):
+        """
+        Safely write data to S3
+
+        Args:
+            df: DataFrame to write
+            path: S3 target path
+            format_type: File format (parquet, csv, etc.)
+            mode: Write mode (overwrite, append, etc.)
+            options: Write options
+        """
+        try:
+            logger.info(f"Writing data to {path} in {format_type} format with mode {mode}")
+
+            row_count = df.count()
+            logger.info(f"Writing {row_count} rows")
+
+            if format_type.lower() == "parquet":
+                self._write_parquet(df, path, mode)
+            elif format_type.lower() == "csv":
+                write_options = options or {"header": "true"}
+                self._write_csv(df, path, mode, write_options)
+            else:
+                raise ValueError(f"Unsupported format: {format_type}")
+
+            logger.info(f"Successfully wrote {row_count} rows to {path}")
+
+        except Exception as e:
+            logger.error(f"Failed to write data to {path}: {e}")
+            raise
 
 
-def read_data_safe(spark: SparkSession, path: str, format_type: str,
-                   schema: Optional[StructType] = None) -> Optional[DataFrame]:
-    """
-    Safely read data from S3 with error handling.
+class DataCleaner:
+    """Handles data cleaning operations"""
 
-    Args:
-        spark: SparkSession instance
-        path: S3 path to read from
-        format_type: Format type (csv, parquet, etc.)
-        schema: Optional schema definition
+    @staticmethod
+    def remove_nulls_and_null_strings(df: DataFrame) -> DataFrame:
+        """
+        Remove records containing NULL values or string literal "Null"
 
-    Returns:
-        DataFrame if successful, None otherwise
-    """
-    try:
-        if not validate_s3_access(spark, path):
-            print(f"S3 access validation failed for {path}")
-            return None
+        Args:
+            df: Input DataFrame
 
-        reader = DataReader(spark)
-        df = reader.read_data(path, format_type, schema)
+        Returns:
+            Cleaned DataFrame
+        """
+        logger.info("Removing NULL values and 'Null' string literals")
 
-        # Normalize column names to lowercase
-        df = df.toDF(*[c.lower() for c in df.columns])
+        initial_count = df.count()
+
+        # Build filter condition for all columns
+        filter_condition = None
+        for column in df.columns:
+            # Check for NULL values and string "Null"
+            col_condition = (col(column).isNotNull()) & (col(column) != "Null")
+
+            if filter_condition is None:
+                filter_condition = col_condition
+            else:
+                filter_condition = filter_condition & col_condition
+
+        df_cleaned = df.filter(filter_condition)
+        final_count = df_cleaned.count()
+
+        removed_count = initial_count - final_count
+        logger.info(f"Removed {removed_count} rows with NULL or 'Null' values")
+
+        return df_cleaned
+
+    @staticmethod
+    def remove_duplicates(df: DataFrame) -> DataFrame:
+        """
+        Remove duplicate records, retaining first occurrence
+
+        Args:
+            df: Input DataFrame
+
+        Returns:
+            Deduplicated DataFrame
+        """
+        logger.info("Removing duplicate records")
+
+        initial_count = df.count()
+        df_deduped = df.dropDuplicates()
+        final_count = df_deduped.count()
+
+        removed_count = initial_count - final_count
+        logger.info(f"Removed {removed_count} duplicate rows")
+
+        return df_deduped
+
+    @staticmethod
+    def clean_dataframe(df: DataFrame, enable_cleaning: bool = True) -> DataFrame:
+        """
+        Apply all cleaning operations to DataFrame
+
+        Args:
+            df: Input DataFrame
+            enable_cleaning: Whether to enable cleaning
+
+        Returns:
+            Cleaned DataFrame
+        """
+        if not enable_cleaning:
+            logger.info("Data cleaning is disabled")
+            return df
+
+        df = DataCleaner.remove_nulls_and_null_strings(df)
+        df = DataCleaner.remove_duplicates(df)
 
         return df
-    except Exception as e:
-        print(f"Error reading data from {path}: {str(e)}")
-        return None
 
 
-def write_data_safe(df: DataFrame, spark: SparkSession, path: str,
-                    format_type: str, mode: str = "overwrite",
-                    hudi_options: Optional[Dict[str, str]] = None) -> bool:
-    """
-    Safely write data to S3 with error handling.
+class GlueCatalogManager:
+    """Manages AWS Glue Data Catalog operations"""
 
-    Args:
-        df: DataFrame to write
-        spark: SparkSession instance
-        path: S3 path to write to
-        format_type: Format type (parquet, csv, hudi)
-        mode: Write mode (overwrite, append)
-        hudi_options: Hudi configuration options
+    def __init__(self, spark: SparkSession, database: str):
+        self.spark = spark
+        self.database = database
 
-    Returns:
-        True if successful, False otherwise
-    """
-    try:
-        if not validate_s3_access(spark, path):
-            print(f"S3 access validation failed for {path}")
-            return False
+    def register_table(
+        self,
+        df: DataFrame,
+        table_name: str,
+        path: str
+    ):
+        """
+        Register DataFrame as a table in Glue Data Catalog
 
-        writer = DataWriter(spark)
-        writer.write_data(df, path, format_type, mode, hudi_options)
+        Args:
+            df: DataFrame to register
+            table_name: Name of the table
+            path: S3 path where data is stored
+        """
+        try:
+            logger.info(f"Registering table {self.database}.{table_name} in Glue Catalog")
 
-        print(f"Successfully wrote data to {path}")
-        return True
-    except Exception as e:
-        print(f"Error writing data to {path}: {str(e)}")
-        return False
+            # Create database if not exists
+            self.spark.sql(f"CREATE DATABASE IF NOT EXISTS {self.database}")
 
+            # Drop table if exists
+            self.spark.sql(f"DROP TABLE IF EXISTS {self.database}.{table_name}")
 
-def get_customer_schema() -> StructType:
-    """
-    Define customer data schema.
+            # Create external table
+            df.write.format("parquet").mode("overwrite").option("path", path).saveAsTable(
+                f"{self.database}.{table_name}"
+            )
 
-    Returns:
-        StructType schema definition
-    """
-    return StructType([
-        StructField("custid", StringType(), False),
-        StructField("name", StringType(), False),
-        StructField("emailid", StringType(), False),
-        StructField("region", StringType(), False)
-    ])
+            logger.info(f"Successfully registered table {self.database}.{table_name}")
+
+        except Exception as e:
+            logger.error(f"Failed to register table {table_name}: {e}")
+            raise
 
 
-def get_order_schema() -> StructType:
-    """
-    Define order data schema.
+class DataAggregator:
+    """Handles data aggregation operations"""
 
-    Returns:
-        StructType schema definition
-    """
-    return StructType([
-        StructField("orderid", StringType(), False),
-        StructField("itemname", StringType(), False),
-        StructField("priceperunit", DecimalType(10, 2), False),
-        StructField("qty", IntegerType(), False),
-        StructField("date", DateType(), False),
-        StructField("custid", StringType(), False)
-    ])
+    @staticmethod
+    def calculate_customer_aggregate_spend(
+        df_customer: DataFrame,
+        df_order: DataFrame
+    ) -> DataFrame:
+        """
+        Calculate total spending per customer per date
 
+        Args:
+            df_customer: Customer DataFrame
+            df_order: Order DataFrame
 
-def clean_dataframe(df: DataFrame, null_string_values: list) -> DataFrame:
-    """
-    Remove NULL values, "Null" strings, and duplicate records.
+        Returns:
+            Aggregated DataFrame with customer spending
+        """
+        logger.info("Calculating customer aggregate spending")
 
-    Args:
-        df: Input DataFrame
-        null_string_values: List of string values to treat as null
+        # Join customer and order data
+        df_joined = df_order.join(df_customer, on="custid", how="inner")
 
-    Returns:
-        Cleaned DataFrame
-    """
-    # Remove rows with actual NULL values
-    df_cleaned = df.dropna()
-
-    # Remove rows with string "Null" values (case-sensitive)
-    for col_name in df.columns:
-        for null_val in null_string_values:
-            df_cleaned = df_cleaned.filter(col(col_name) != null_val)
-
-    # Remove duplicate records (keep first occurrence)
-    df_cleaned = df_cleaned.dropDuplicates()
-
-    return df_cleaned
-
-
-def apply_scd2(customer_df: DataFrame, order_df: DataFrame,
-               spark: SparkSession) -> DataFrame:
-    """
-    Apply SCD Type 2 logic to create order summary with historical tracking.
-
-    Args:
-        customer_df: Customer DataFrame
-        order_df: Order DataFrame
-        spark: SparkSession instance
-
-    Returns:
-        DataFrame with SCD2 columns
-    """
-    # Join customer and order data
-    joined_df = order_df.join(
-        customer_df,
-        order_df.custid == customer_df.custid,
-        "inner"
-    ).select(
-        order_df.custid,
-        order_df.orderid,
-        customer_df.name,
-        customer_df.emailid,
-        customer_df.region,
-        order_df.itemname,
-        order_df.priceperunit,
-        order_df.qty,
-        order_df.date
-    )
-
-    # Add SCD2 metadata columns
-    scd2_df = joined_df \
-        .withColumn("isactive", lit(True).cast(BooleanType())) \
-        .withColumn("startdate", current_timestamp().cast(TimestampType())) \
-        .withColumn("enddate", lit(None).cast(TimestampType())) \
-        .withColumn("opts", current_timestamp().cast(TimestampType()))
-
-    return scd2_df
-
-
-def aggregate_customer_spend(order_summary_df: DataFrame) -> DataFrame:
-    """
-    Aggregate order data by customer and date to calculate total spending.
-
-    Args:
-        order_summary_df: Order summary DataFrame
-
-    Returns:
-        Aggregated DataFrame with customer spending metrics
-    """
-    # Calculate total spend per order
-    order_summary_df = order_summary_df.withColumn(
-        "totalspend",
-        col("priceperunit") * col("qty")
-    )
-
-    # Aggregate by customer and date
-    agg_df = order_summary_df.groupBy("custid", "name", "region", "date") \
-        .agg(
-            _sum("totalspend").alias("total_spend"),
-            count("orderid").alias("order_count"),
-            _sum("qty").alias("total_quantity"),
-            _max("priceperunit").alias("max_price"),
-            _min("priceperunit").alias("min_price")
+        # Calculate total amount (priceperunit * qty)
+        df_joined = df_joined.withColumn(
+            "totalamount",
+            col("priceperunit").cast("double") * col("qty").cast("double")
         )
 
-    return agg_df
+        # Aggregate by customer and date
+        df_aggregated = df_joined.groupBy("custid", "name", "emailid", "region", "date").agg(
+            _sum("totalamount").alias("totalspend")
+        )
 
+        row_count = df_aggregated.count()
+        logger.info(f"Calculated aggregate spending for {row_count} customer-date combinations")
 
-def register_table_to_catalog(spark: SparkSession, df: DataFrame,
-                               database: str, table_name: str,
-                               s3_path: str) -> bool:
-    """
-    Register DataFrame as table in Glue Data Catalog.
-
-    Args:
-        spark: SparkSession instance
-        df: DataFrame to register
-        database: Catalog database name
-        table_name: Table name
-        s3_path: S3 location of data
-
-    Returns:
-        True if successful, False otherwise
-    """
-    try:
-        # Create database if not exists
-        spark.sql(f"CREATE DATABASE IF NOT EXISTS {database}")
-
-        # Register table
-        df.write.format("parquet") \
-            .mode("overwrite") \
-            .option("path", s3_path) \
-            .saveAsTable(f"{database}.{table_name}")
-
-        print(f"Successfully registered table {database}.{table_name}")
-        return True
-    except Exception as e:
-        print(f"Error registering table {database}.{table_name}: {str(e)}")
-        return False
+        return df_aggregated
 
 
 def main():
     """
-    Main ETL job execution function.
+    Main ETL job execution function
     """
-    print("Starting Customer Order ETL Job...")
+    try:
+        logger.info("Starting AWS Glue PySpark ETL Job")
 
-    # Initialize Spark contexts
-    spark, glue_context = initialize_spark_contexts()
+        # Initialize Spark contexts
+        spark, glueContext, job = SparkContextManager.initialize_spark_contexts()
 
-    # Load job parameters
-    params = get_job_parameters()
+        # Load configuration
+        params = ConfigManager.get_job_parameters()
 
-    # Extract configuration
-    customer_source = params['inputs']['customer']['source_path']
-    customer_format = params['inputs']['customer']['source_format']
-    order_source = params['inputs']['order']['source_path']
-    order_format = params['inputs']['order']['source_format']
+        # Initialize components
+        reader = S3DataReader(spark)
+        writer = S3DataWriter(spark)
+        catalog_manager = GlueCatalogManager(spark, params["glue_database"])
 
-    customer_target = params['outputs']['customer']['target_path']
-    order_target = params['outputs']['order']['target_path']
-    ordersummary_target = params['outputs']['ordersummary']['target_path']
-    aggregate_target = params['outputs']['customeraggregatespend']['target_path']
+        # ===== STEP 1: Ingest Customer Data =====
+        logger.info("=" * 80)
+        logger.info("STEP 1: Ingesting Customer Data")
+        logger.info("=" * 80)
 
-    catalog_db = params['catalog']['database']
-    null_values = params['processing']['null_string_values']
+        df_customer_raw = reader.read_data_safe(
+            path=params["customer_source_path"],
+            format_type=params["customer_source_format"],
+            options=params.get("customer_source_options"),
+            expected_columns=params.get("customer_expected_columns")
+        )
 
-    # Step 1: Ingest customer data
-    print(f"Reading customer data from {customer_source}...")
-    customer_df = read_data_safe(spark, customer_source, customer_format, get_customer_schema())
+        # ===== STEP 2: Ingest Order Data =====
+        logger.info("=" * 80)
+        logger.info("STEP 2: Ingesting Order Data")
+        logger.info("=" * 80)
 
-    if customer_df is None:
-        print("Failed to read customer data")
-        return
+        df_order_raw = reader.read_data_safe(
+            path=params["order_source_path"],
+            format_type=params["order_source_format"],
+            options=params.get("order_source_options"),
+            expected_columns=params.get("order_expected_columns")
+        )
 
-    print(f"Customer records loaded: {customer_df.count()}")
+        # ===== STEP 3: Clean Customer Data =====
+        logger.info("=" * 80)
+        logger.info("STEP 3: Cleaning Customer Data")
+        logger.info("=" * 80)
 
-    # Step 2: Ingest order data
-    print(f"Reading order data from {order_source}...")
-    order_df = read_data_safe(spark, order_source, order_format, get_order_schema())
+        df_customer_clean = DataCleaner.clean_dataframe(
+            df_customer_raw,
+            enable_cleaning=params.get("enable_data_cleaning", True)
+        )
 
-    if order_df is None:
-        print("Failed to read order data")
-        return
+        # ===== STEP 4: Clean Order Data =====
+        logger.info("=" * 80)
+        logger.info("STEP 4: Cleaning Order Data")
+        logger.info("=" * 80)
 
-    print(f"Order records loaded: {order_df.count()}")
+        df_order_clean = DataCleaner.clean_dataframe(
+            df_order_raw,
+            enable_cleaning=params.get("enable_data_cleaning", True)
+        )
 
-    # Step 3: Clean customer data
-    print("Cleaning customer data...")
-    customer_clean = clean_dataframe(customer_df, null_values)
-    print(f"Customer records after cleaning: {customer_clean.count()}")
+        # ===== STEP 5: Write and Catalog Customer Data =====
+        logger.info("=" * 80)
+        logger.info("STEP 5: Writing and Cataloging Customer Data")
+        logger.info("=" * 80)
 
-    # Step 4: Clean order data
-    print("Cleaning order data...")
-    order_clean = clean_dataframe(order_df, null_values)
-    print(f"Order records after cleaning: {order_clean.count()}")
+        writer.write_data_safe(
+            df=df_customer_clean,
+            path=params["customer_target_path"],
+            format_type=params["customer_target_format"],
+            mode=params.get("customer_target_mode", "overwrite")
+        )
 
-    # Step 5: Write cleaned customer data to catalog
-    print(f"Writing cleaned customer data to {customer_target}...")
-    write_data_safe(customer_clean, spark, customer_target, "parquet")
-    register_table_to_catalog(
-        spark, customer_clean, catalog_db,
-        params['catalog']['tables']['customer'], customer_target
-    )
+        catalog_manager.register_table(
+            df=df_customer_clean,
+            table_name=params["customer_table_name"],
+            path=params["customer_target_path"]
+        )
 
-    # Step 6: Write cleaned order data to catalog
-    print(f"Writing cleaned order data to {order_target}...")
-    write_data_safe(order_clean, spark, order_target, "parquet")
-    register_table_to_catalog(
-        spark, order_clean, catalog_db,
-        params['catalog']['tables']['order'], order_target
-    )
+        # ===== STEP 6: Write and Catalog Order Data =====
+        logger.info("=" * 80)
+        logger.info("STEP 6: Writing and Cataloging Order Data")
+        logger.info("=" * 80)
 
-    # Step 7: Apply SCD Type 2 logic
-    if params['processing']['enable_scd2']:
-        print("Applying SCD Type 2 logic...")
-        order_summary_df = apply_scd2(customer_clean, order_clean, spark)
-        print(f"Order summary records created: {order_summary_df.count()}")
+        writer.write_data_safe(
+            df=df_order_clean,
+            path=params["order_target_path"],
+            format_type=params["order_target_format"],
+            mode=params.get("order_target_mode", "overwrite")
+        )
 
-        # Prepare Hudi options
-        hudi_options = {
-            'hoodie.table.name': params['hudi']['table_name'],
-            'hoodie.datasource.write.recordkey.field': params['hudi']['record_key'],
-            'hoodie.datasource.write.precombine.field': params['hudi']['precombine_field'],
-            'hoodie.datasource.write.table.type': params['hudi']['table_type'],
-            'hoodie.datasource.write.operation': params['hudi']['operation'],
-            'hoodie.datasource.write.partitionpath.field': params['hudi']['partition_fields'],
-            'hoodie.index.type': params['hudi']['index_type']
-        }
+        catalog_manager.register_table(
+            df=df_order_clean,
+            table_name=params["order_table_name"],
+            path=params["order_target_path"]
+        )
 
-        # Write to Hudi table
-        print(f"Writing order summary to Hudi table at {ordersummary_target}...")
-        write_data_safe(order_summary_df, spark, ordersummary_target, "hudi",
-                       hudi_options=hudi_options)
+        # ===== STEP 7: Calculate Customer Aggregate Spend =====
+        logger.info("=" * 80)
+        logger.info("STEP 7: Calculating Customer Aggregate Spend")
+        logger.info("=" * 80)
 
-        # Step 8: Aggregate customer spending
-        if params['processing']['enable_aggregation']:
-            print("Calculating customer aggregate spending...")
-            aggregate_df = aggregate_customer_spend(order_summary_df)
-            print(f"Aggregate records created: {aggregate_df.count()}")
+        df_aggregate = DataAggregator.calculate_customer_aggregate_spend(
+            df_customer=df_customer_clean,
+            df_order=df_order_clean
+        )
 
-            # Write aggregated data
-            print(f"Writing aggregate data to {aggregate_target}...")
-            write_data_safe(aggregate_df, spark, aggregate_target, "parquet")
-            register_table_to_catalog(
-                spark, aggregate_df, catalog_db,
-                params['catalog']['tables']['customeraggregatespend'], aggregate_target
-            )
+        # ===== STEP 8: Write and Catalog Aggregate Data =====
+        logger.info("=" * 80)
+        logger.info("STEP 8: Writing and Cataloging Aggregate Data")
+        logger.info("=" * 80)
 
-    print("Customer Order ETL Job completed successfully!")
+        writer.write_data_safe(
+            df=df_aggregate,
+            path=params["aggregate_target_path"],
+            format_type=params["aggregate_target_format"],
+            mode=params.get("aggregate_target_mode", "overwrite")
+        )
+
+        catalog_manager.register_table(
+            df=df_aggregate,
+            table_name=params["aggregate_table_name"],
+            path=params["aggregate_target_path"]
+        )
+
+        # Commit job if initialized
+        if job:
+            job.commit()
+
+        logger.info("=" * 80)
+        logger.info("AWS Glue PySpark ETL Job completed successfully")
+        logger.info("=" * 80)
+
+    except Exception as e:
+        logger.error(f"Job failed with error: {e}")
+        raise
 
 
 if __name__ == "__main__":
