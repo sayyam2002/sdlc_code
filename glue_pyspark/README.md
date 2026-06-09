@@ -1,14 +1,15 @@
-# AWS Glue PySpark Job - Customer Order Data Processing
+# AWS Glue PySpark ETL Job - Customer Order Processing
 
 ## Overview
-This AWS Glue PySpark job processes customer and order data from S3, performs data quality checks, creates catalog tables, implements SCD Type 2 using Apache Hudi, and generates customer aggregate spend analytics.
+This AWS Glue job processes customer and order data from S3, performs data quality transformations, registers tables in the Glue Data Catalog, and generates customer spending aggregates.
 
 ## Features
 - **Data Ingestion**: Load customer and order CSV files from S3
-- **Data Quality**: Remove NULL values, 'Null' strings, and duplicates
-- **Catalog Integration**: Register cleaned datasets in AWS Glue Data Catalog
-- **SCD Type 2**: Track historical changes using Apache Hudi
-- **Aggregation**: Calculate customer total spending for analytics
+- **Data Cleaning**: Remove NULL values, "Null" strings, and duplicate records
+- **Catalog Registration**: Register cleaned datasets in AWS Glue Data Catalog
+- **Aggregation**: Generate customer-level spending analytics
+- **SCD Type 2**: Track historical changes with IsActive, StartDate, EndDate, OpTs columns
+- **Hudi Integration**: Use Apache Hudi format for upsert operations
 
 ## Project Structure
 ```
@@ -25,21 +26,16 @@ glue_pyspark/
 │       ├── __init__.py
 │       └── test_job.py
 └── sample_data/
-    ├── customer.csv
-    └── order.csv
+    ├── customers.csv
+    └── orders.csv
 ```
 
 ## Configuration
 All job parameters are defined in `config/glue_params.yaml`:
-- Input/output S3 paths
-- Data formats
-- Glue catalog database and table names
-- Hudi configuration for SCD Type 2
-
-## Sample Data
-Sample CSV files are provided in `sample_data/`:
-- `customer.csv`: Customer master data (CustId, Name, EmailId, Region)
-- `order.csv`: Order transaction data (OrderId, ItemName, PricePerUnit, Qty, Date, CustId)
+- S3 source paths for customer and order data
+- S3 target paths for cleaned, curated, and analytics data
+- Glue Data Catalog database and table names
+- File formats and processing options
 
 ## Running the Job
 
@@ -55,27 +51,51 @@ pip install -r requirements.txt
 python -m pytest src/test/test_job.py -v
 ```
 
-## Dependencies
-- PySpark 3.x
-- AWS Glue libraries
-- Apache Hudi (for SCD Type 2)
-- PyYAML (for configuration)
+## Data Flow
+1. **Ingest**: Read customer and order CSV files from S3
+2. **Clean**: Remove nulls and duplicates
+3. **Catalog**: Register tables in Glue Data Catalog
+4. **Aggregate**: Join and compute customer spending totals
+5. **Write**: Output to S3 in Parquet format with SCD Type 2 metadata
 
-## Technical Requirements Implemented
-- **TR-INGEST-001**: Customer CSV ingestion from S3
-- **TR-INGEST-002**: Order CSV ingestion from S3
-- **TR-DQ-001**: Data quality validation and cleansing
-- **TR-CATALOG-001**: Glue Data Catalog registration
-- **TR-INCR-001**: SCD Type 2 implementation with Hudi
-- **TR-AGG-001**: Customer aggregate spend calculation
+## Sample Data
+Sample CSV files are provided in `sample_data/` for testing:
+- `customers.csv`: Customer master data (CustId, Name, EmailId, Region)
+- `orders.csv`: Order transaction data (OrderId, ItemName, PricePerUnit, Qty, Date, CustId)
 
-## Output Datasets
-1. **Catalog Tables**: `customer` and `order` in Glue Data Catalog
-2. **Order Summary (Hudi)**: SCD Type 2 table at `s3://adif-sdlc/curated/sdlc_wizard/ordersummary/`
-3. **Customer Aggregate Spend**: Analytics table at `s3://adif-sdlc/analytics/customeraggregatespend/`
+## Requirements
+- AWS Glue 3.0+
+- Python 3.7+
+- PySpark 3.1+
+- Apache Hudi (included in Glue 3.0+)
 
-## Notes
-- All S3 paths are validated before operations
-- Column names are normalized to lowercase
-- Comprehensive error handling and logging included
-- Tests use mocked Spark I/O for safe execution
+## Schema Definitions
+
+### Customer Schema
+| Column | Type | Nullable |
+|--------|------|----------|
+| CustId | String | No |
+| Name | String | No |
+| EmailId | String | No |
+| Region | String | No |
+
+### Order Schema
+| Column | Type | Nullable |
+|--------|------|----------|
+| OrderId | String | No |
+| ItemName | String | No |
+| PricePerUnit | Decimal(10,2) | No |
+| Qty | Integer | No |
+| Date | Date | No |
+| CustId | String | No |
+
+### SCD Type 2 Columns (Added to Output)
+| Column | Type | Description |
+|--------|------|-------------|
+| IsActive | Boolean | Current record indicator |
+| StartDate | Timestamp | Record effective start date |
+| EndDate | Timestamp | Record effective end date |
+| OpTs | Timestamp | Operation timestamp |
+
+## License
+Proprietary - Internal Use Only

@@ -1,51 +1,47 @@
 # AWS Glue Job Parameters Configuration
 
-# Input Sources
-inputs_customer_source_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
-inputs_customer_source_format: "csv"
-inputs_order_source_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
-inputs_order_source_format: "csv"
+# Customer Data Source
+customer_source_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
+customer_source_format: "csv"
 
-# Output Targets
-outputs_customer_catalog_path: "s3://adif-sdlc/catalog/sdlc_wizard/customer/"
-outputs_order_catalog_path: "s3://adif-sdlc/catalog/sdlc_wizard/order/"
-outputs_ordersummary_hudi_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
-outputs_customeraggregatespend_path: "s3://adif-sdlc/analytics/customeraggregatespend/"
+# Order Data Source
+order_source_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
+order_source_format: "csv"
+
+# Cleaned Data Targets
+customer_clean_target_path: "s3://adif-sdlc/curated/sdlc_wizard/customer_clean/"
+order_clean_target_path: "s3://adif-sdlc/curated/sdlc_wizard/order_clean/"
+
+# Catalog Targets
+customer_catalog_path: "s3://adif-sdlc/catalog/sdlc_wizard_customer/"
+order_catalog_path: "s3://adif-sdlc/catalog/sdlc_wizard_order/"
+
+# Order Summary Target (SCD Type 2)
+order_summary_target_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
+
+# Analytics Target
+customer_aggregate_spend_path: "s3://adif-sdlc/analytics/customeraggregatespend/"
 
 # Glue Data Catalog Configuration
-catalog_database_name: "gen_ai_poc_databrickscoe"
-catalog_customer_table_name: "customer"
-catalog_order_table_name: "order"
-catalog_ordersummary_table_name: "ordersummary"
-catalog_customeraggregatespend_table_name: "customeraggregatespend"
+glue_database: "sdlc_wizard_db"
+customer_table_name: "sdlc_wizard_customer"
+order_table_name: "sdlc_wizard_order"
+order_summary_table_name: "ordersummary"
+customer_aggregate_table_name: "customeraggregatespend"
 
-# Data Quality Configuration
-dq_remove_nulls: true
-dq_remove_null_strings: true
-dq_remove_duplicates: true
+# Processing Options
+output_format: "parquet"
+enable_scd2: true
+enable_hudi: true
 
-# Hudi Configuration for SCD Type 2
-hudi_table_name: "ordersummary"
-hudi_record_key: "OrderId"
-hudi_precombine_field: "OpTs"
-hudi_partition_path: "Date"
-hudi_operation: "upsert"
+# Hudi Configuration
 hudi_table_type: "COPY_ON_WRITE"
+hudi_operation: "upsert"
+hudi_precombine_field: "OpTs"
+hudi_recordkey_field: "CustId,OrderId"
+hudi_partitionpath_field: "Date"
 
-# SCD Type 2 Configuration
-scd_enable: true
-scd_active_column: "IsActive"
-scd_start_date_column: "StartDate"
-scd_end_date_column: "EndDate"
-scd_operation_timestamp_column: "OpTs"
-
-# CSV Read Options
-csv_header: true
-csv_infer_schema: true
-csv_delimiter: ","
-csv_encoding: "UTF-8"
-
-# Write Options
-write_mode: "overwrite"
-write_format_parquet: "parquet"
-write_format_hudi: "hudi"
+# Data Quality Options
+remove_nulls: true
+remove_duplicates: true
+null_string_values: ["Null", "NULL", "null"]
