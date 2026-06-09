@@ -1,26 +1,12 @@
-# AWS Glue PySpark ETL Pipeline - Customer Order Analytics
+# Customer Order Pipeline - AWS Glue PySpark ETL Job
 
 ## Overview
-This AWS Glue PySpark job implements a complete ETL pipeline for customer and order data processing with the following capabilities:
-- Ingests customer and order CSV data from S3
-- Performs data quality operations (null removal, deduplication)
-- Registers cleaned data to AWS Glue Data Catalog
-- Implements SCD Type 2 using Apache Hudi for customer baseline tracking
+This AWS Glue ETL job implements a complete customer order data pipeline that:
+- Ingests customer and order data from S3 CSV files
+- Performs data quality transformations (null removal, deduplication)
+- Writes cleaned data to AWS Glue Data Catalog in Parquet format
+- Implements SCD Type 2 using Apache Hudi for order summary tracking
 - Generates customer aggregate spend analytics
-- Implements incremental processing with change data capture
-
-## Architecture
-```
-S3 Source (CSV) → Glue Job → Data Cleaning → Catalog Registration → Hudi SCD2 → Analytics Aggregation → S3 Target
-```
-
-## Data Flow
-1. **Ingestion**: Load customer and order CSV files from S3
-2. **Cleaning**: Remove nulls and duplicates
-3. **Catalog**: Register tables in Glue Data Catalog
-4. **Baseline**: Maintain customer baseline with SCD Type 2 (Hudi)
-5. **Analytics**: Calculate customer aggregate spend
-6. **Output**: Write results to S3 in Parquet format
 
 ## Project Structure
 ```
@@ -37,71 +23,95 @@ glue_pyspark/
 │       ├── __init__.py
 │       └── test_job.py
 └── sample_data/
-    ├── customer_sample.csv
-    └── order_sample.csv
+    ├── customer.csv
+    └── order.csv
 ```
+
+## Technical Requirements Implemented
+
+### TR-INGEST-001: Customer Data Ingestion
+- Reads CSV files from S3: `s3://adif-sdlc/sdlc_wizard/customerdata/`
+- Schema: CustId, Name, EmailId, Region
+- Validates schema and handles errors
+
+### TR-INGEST-002: Order Data Ingestion
+- Reads CSV files from S3: `s3://adif-sdlc/sdlc_wizard/orderdata/`
+- Schema: OrderId, ItemName, PricePerUnit, Qty, Date, CustId
+- Type casting for numeric and date fields
+
+### TR-CLEAN-001: Null Value Removal
+- Removes records with NULL values
+- Removes records with string literal "Null"
+
+### TR-CLEAN-002: Deduplication
+- Removes duplicate records based on all columns
+
+### TR-CATALOG-001 & TR-CATALOG-002: Data Catalog Registration
+- Writes cleaned data to S3 in Parquet format
+- Registers tables in AWS Glue Data Catalog:
+  - `sdlc_wizard_customer`
+  - `sdlc_wizard_order`
+
+### SCD Type 2 Implementation
+- Implements Slowly Changing Dimension Type 2 using Apache Hudi
+- Tracks historical changes with IsActive, StartDate, EndDate, OpTs columns
+- Writes to: `s3://adif-sdlc/curated/sdlc_wizard/ordersummary/`
+
+### Aggregation Analytics
+- Generates customer aggregate spend table
+- Calculates total spending per customer per date
+- Writes to: `s3://adif-sdlc/analytics/customeraggregatespend/`
 
 ## Configuration
-All job parameters are defined in `config/glue_params.yaml`:
-- S3 input/output paths
-- Glue catalog database and table names
-- Hudi configuration
-- Processing options
 
-## Prerequisites
-- AWS Glue 3.0 or higher
-- Python 3.7+
-- Apache Hudi libraries
-- IAM role with permissions for S3, Glue Catalog, and CloudWatch
-
-## Installation
-```bash
-pip install -r requirements.txt
-```
+All runtime parameters are defined in `config/glue_params.yaml`:
+- Source paths for customer and order data
+- Target paths for curated and analytics data
+- Database and table names
+- CSV parsing options
 
 ## Running the Job
 
-### Local Testing
-```bash
-python -m pytest src/test/test_job.py -v
-```
-
-### AWS Glue Deployment
+### AWS Glue Console
 1. Upload `src/main/job.py` to S3
-2. Create Glue job with script location
+2. Create a new Glue job pointing to the script
 3. Configure job parameters from `glue_params.yaml`
 4. Run the job
 
+### Local Testing
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run tests
+python -m pytest src/test/test_job.py -v
+```
+
 ## Sample Data
 Sample CSV files are provided in `sample_data/` directory:
-- `customer_sample.csv`: Customer master data
-- `order_sample.csv`: Order transaction data
+- `customer.csv`: Sample customer records
+- `order.csv`: Sample order records
 
-## Key Features
-- **Bulletproof S3 Access**: Validates S3 paths before operations
-- **Safe Read/Write**: Wrapped operations with error handling
-- **Column Normalization**: Lowercase column names for consistency
-- **SCD Type 2**: Historical tracking with IsActive, StartDate, EndDate
-- **Incremental Processing**: CDC pattern for efficient updates
-- **Comprehensive Testing**: Full test coverage with mocked I/O
+## Dependencies
+- PySpark (provided by AWS Glue)
+- PyYAML for configuration management
+- pytest for testing
 
-## Output Tables
-1. **customer** (Curated): Cleaned customer data
-2. **order** (Curated): Cleaned order data
-3. **customer_baseline** (State): SCD Type 2 customer history
-4. **ordersummary** (Curated): Order summary with customer details
-5. **customeraggregatespend** (Analytics): Customer spending aggregates
+## Error Handling
+- Schema validation with detailed error messages
+- Type casting error handling
+- Empty file warnings
+- S3 access validation before operations
 
-## Monitoring
-- CloudWatch logs for job execution
-- Glue job metrics for performance monitoring
-- Data quality metrics in job output
+## Logging
+Comprehensive logging at INFO, WARNING, and ERROR levels:
+- Record counts at each stage
+- Schema validation results
+- Data quality metrics
+- Processing timestamps
 
-## Troubleshooting
-- Check CloudWatch logs for detailed error messages
-- Verify S3 bucket permissions
-- Ensure Glue catalog database exists
-- Validate Hudi library availability
-
-## License
-Proprietary - Internal Use Only
+## IAM Permissions Required
+- s3:GetObject on source buckets
+- s3:PutObject on target buckets
+- glue:CreateTable, glue:UpdateTable
+- logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents

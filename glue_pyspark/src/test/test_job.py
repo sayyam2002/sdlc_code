@@ -1,448 +1,514 @@
 """
-Comprehensive test suite for AWS Glue PySpark ETL job
-Tests all transformations, data quality operations, and business logic
+Unit tests for Customer Order Pipeline ETL Job
 """
 
 import sys
-from unittest.mock import patch, MagicMock
-from decimal import Decimal
+import os
+from unittest.mock import Mock, patch, MagicMock
 from datetime import datetime
 
-# Mock Glue modules before importing job
-sys.modules['awsglue'] = MagicMock()
-sys.modules['awsglue.context'] = MagicMock()
-sys.modules['awsglue.job'] = MagicMock()
-sys.modules['awsglue.utils'] = MagicMock()
-sys.modules['awsglue.dynamicframe'] = MagicMock()
+# Add src to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from pyspark.sql import SparkSession
-from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DecimalType
-import pytest
-
-from main.job import (
-    get_job_parameters,
-    validate_s3_path,
-    clean_dataframe,
-    add_scd2_columns,
-    detect_customer_changes,
-    create_order_summary,
-    calculate_customer_aggregate_spend,
-    DataReader,
-    DataWriter
-)
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType
 
 
-@pytest.fixture(scope="session")
-def spark():
-    """Create Spark session for testing"""
+# Initialize Spark for testing
+def get_spark():
+    """Get or create Spark session for testing"""
+    if hasattr(sys.modules['builtins'], 'spark'):
+        return getattr(sys.modules['builtins'], 'spark')
+
     spark = SparkSession.builder \
-        .appName("test_customer_order_analytics") \
+        .appName("test_customer_order_pipeline") \
         .master("local[2]") \
+        .config("spark.sql.shuffle.partitions", "2") \
         .getOrCreate()
-    yield spark
-    # Don't stop spark if it was provided by builtins
+
+    spark.sparkContext.setLogLevel("ERROR")
+    return spark
 
 
-@pytest.fixture
-def sample_customer_data(spark):
-    """Create sample customer data for testing"""
-    schema = StructType([
-        StructField("custid", StringType(), False),
-        StructField("name", StringType(), True),
-        StructField("emailid", StringType(), True),
-        StructField("region", StringType(), True)
-    ])
-
-    data = [
-        ("C001", "John Doe", "john.doe@example.com", "North"),
-        ("C002", "Jane Smith", "jane.smith@example.com", "South"),
-        ("C003", "Bob Johnson", "bob.johnson@example.com", "East"),
-        ("C004", "Alice Williams", "alice.williams@example.com", "West"),
-        ("C005", "Charlie Brown", "charlie.brown@example.com", "North")
-    ]
-
-    return spark.createDataFrame(data, schema)
+spark = get_spark()
 
 
-@pytest.fixture
-def sample_order_data(spark):
-    """Create sample order data for testing"""
-    schema = StructType([
-        StructField("orderid", StringType(), False),
-        StructField("itemname", StringType(), True),
-        StructField("priceperunit", DecimalType(10, 2), True),
-        StructField("qty", IntegerType(), True),
-        StructField("date", StringType(), True),
-        StructField("custid", StringType(), False)
-    ])
+def test_config_manager_loads_parameters():
+    """Test ConfigManager loads parameters correctly"""
+    from main.job import ConfigManager
 
-    data = [
-        ("O001", "Laptop", Decimal("1200.00"), 1, "2024-01-15", "C001"),
-        ("O002", "Mouse", Decimal("25.50"), 2, "2024-01-16", "C001"),
-        ("O003", "Keyboard", Decimal("75.00"), 1, "2024-01-16", "C002"),
-        ("O004", "Monitor", Decimal("350.00"), 2, "2024-01-17", "C003"),
-        ("O005", "Headphones", Decimal("89.99"), 1, "2024-01-18", "C002")
-    ]
-
-    return spark.createDataFrame(data, schema)
-
-
-@pytest.fixture
-def sample_customer_with_nulls(spark):
-    """Create sample customer data with null values for testing"""
-    schema = StructType([
-        StructField("custid", StringType(), True),
-        StructField("name", StringType(), True),
-        StructField("emailid", StringType(), True),
-        StructField("region", StringType(), True)
-    ])
-
-    data = [
-        ("C001", "John Doe", "john.doe@example.com", "North"),
-        ("C002", None, "jane.smith@example.com", "South"),
-        ("C003", "Bob Johnson", "Null", "East"),
-        (None, "Alice Williams", "alice.williams@example.com", "West"),
-        ("C005", "Charlie Brown", "charlie.brown@example.com", "North"),
-        ("C005", "Charlie Brown", "charlie.brown@example.com", "North")  # Duplicate
-    ]
-
-    return spark.createDataFrame(data, schema)
-
-
-def test_get_job_parameters():
-    """Test job parameter loading"""
-    params = get_job_parameters()
+    params = ConfigManager.get_job_parameters()
 
     assert params is not None
     assert isinstance(params, dict)
-    assert "inputs_customer_source_path" in params
-    assert "inputs_order_source_path" in params
-    assert "catalog_database_name" in params
-    assert params["catalog_database_name"] == "gen_ai_poc_databrickscoe"
+    assert 'inputs_source_customer_path' in params
+    assert 'inputs_source_order_path' in params
+    assert params['inputs_source_customer_path'] == 's3://adif-sdlc/sdlc_wizard/customerdata/'
+    assert params['inputs_source_order_path'] == 's3://adif-sdlc/sdlc_wizard/orderdata/'
 
 
-def test_validate_s3_path():
-    """Test S3 path validation"""
-    # Valid paths
-    assert validate_s3_path("s3://bucket/path/to/data/") == True
-    assert validate_s3_path("s3a://bucket/path/to/data/") == True
+def test_s3_data_reader_reads_customer_data():
+    """Test S3DataReader reads and validates customer data"""
+    from main.job import S3DataReader
 
-    # Invalid paths
-    assert validate_s3_path("") == False
-    assert validate_s3_path(None) == False
-    assert validate_s3_path("/local/path") == False
-    assert validate_s3_path("file:///tmp/data") == False
+    logger = Mock()
+    reader = S3DataReader(spark, logger)
 
+    # Create sample customer data
+    customer_data = [
+        ('C001', 'John Doe', 'john@example.com', 'North'),
+        ('C002', 'Jane Smith', 'jane@example.com', 'South'),
+        ('C003', 'Bob Johnson', 'bob@example.com', 'East')
+    ]
 
-def test_clean_dataframe_removes_nulls(spark, sample_customer_with_nulls):
-    """Test that clean_dataframe removes NULL values"""
-    cleaned_df = clean_dataframe(sample_customer_with_nulls, "customer")
+    sample_df = spark.createDataFrame(
+        customer_data,
+        ['CustId', 'Name', 'EmailId', 'Region']
+    )
 
-    assert cleaned_df is not None
-    assert cleaned_df.count() == 2  # Only 2 complete records without nulls
-
-    # Verify no nulls remain
-    for col_name in cleaned_df.columns:
-        null_count = cleaned_df.filter(cleaned_df[col_name].isNull()).count()
-        assert null_count == 0, f"Column {col_name} still has null values"
-
-
-def test_clean_dataframe_removes_string_null(spark, sample_customer_with_nulls):
-    """Test that clean_dataframe removes string 'Null' values"""
-    cleaned_df = clean_dataframe(sample_customer_with_nulls, "customer")
-
-    # Verify no 'Null' strings remain
-    for col_name in cleaned_df.columns:
-        null_string_count = cleaned_df.filter(cleaned_df[col_name] == "Null").count()
-        assert null_string_count == 0, f"Column {col_name} still has 'Null' strings"
-
-
-def test_clean_dataframe_removes_duplicates(spark, sample_customer_with_nulls):
-    """Test that clean_dataframe removes duplicate records"""
-    cleaned_df = clean_dataframe(sample_customer_with_nulls, "customer")
-
-    # Count should be less than original due to duplicate removal
-    assert cleaned_df.count() <= sample_customer_with_nulls.count()
-
-    # Verify no duplicates remain
-    distinct_count = cleaned_df.distinct().count()
-    assert cleaned_df.count() == distinct_count
-
-
-def test_clean_dataframe_with_none_input():
-    """Test clean_dataframe handles None input gracefully"""
-    result = clean_dataframe(None, "test")
-    assert result is None
-
-
-def test_add_scd2_columns(spark, sample_customer_data):
-    """Test SCD Type 2 column addition"""
-    scd2_df = add_scd2_columns(sample_customer_data)
-
-    assert scd2_df is not None
-
-    # Verify SCD2 columns exist
-    assert "isactive" in scd2_df.columns
-    assert "startdate" in scd2_df.columns
-    assert "enddate" in scd2_df.columns
-    assert "opts" in scd2_df.columns
-
-    # Verify all records are active
-    active_count = scd2_df.filter(scd2_df["isactive"] == True).count()
-    assert active_count == scd2_df.count()
-
-    # Verify enddate is null for active records
-    null_enddate_count = scd2_df.filter(scd2_df["enddate"].isNull()).count()
-    assert null_enddate_count == scd2_df.count()
-
-
-def test_add_scd2_columns_with_none_input():
-    """Test add_scd2_columns handles None input gracefully"""
-    result = add_scd2_columns(None)
-    assert result is None
-
-
-def test_detect_customer_changes_no_baseline(spark, sample_customer_data):
-    """Test change detection with no baseline (all records are new)"""
-    changed_df = detect_customer_changes(sample_customer_data, None)
-
-    assert changed_df is not None
-    assert changed_df.count() == sample_customer_data.count()
-
-
-def test_detect_customer_changes_with_baseline(spark, sample_customer_data):
-    """Test change detection with existing baseline"""
-    # Create baseline with subset of customers
-    baseline_data = sample_customer_data.filter(sample_customer_data["custid"].isin(["C001", "C002"]))
-
-    changed_df = detect_customer_changes(sample_customer_data, baseline_data)
-
-    assert changed_df is not None
-    # Should detect 3 new customers (C003, C004, C005)
-    assert changed_df.count() == 3
-
-
-def test_detect_customer_changes_with_none_input(spark):
-    """Test change detection handles None input gracefully"""
-    result = detect_customer_changes(None, None)
-    assert result is None
-
-
-def test_create_order_summary(spark, sample_customer_data, sample_order_data):
-    """Test order summary creation with customer join"""
-    order_summary = create_order_summary(sample_customer_data, sample_order_data)
-
-    assert order_summary is not None
-    assert order_summary.count() == 5  # All orders should join with customers
-
-    # Verify all expected columns exist
-    expected_columns = ["orderid", "itemname", "priceperunit", "qty", "date",
-                       "custid", "name", "emailid", "region"]
-    for col in expected_columns:
-        assert col in order_summary.columns
-
-
-def test_create_order_summary_with_missing_input(spark, sample_customer_data):
-    """Test order summary handles missing input gracefully"""
-    result = create_order_summary(sample_customer_data, None)
-    assert result is None
-
-    result = create_order_summary(None, sample_customer_data)
-    assert result is None
-
-
-def test_calculate_customer_aggregate_spend(spark, sample_customer_data, sample_order_data):
-    """Test customer aggregate spend calculation"""
-    order_summary = create_order_summary(sample_customer_data, sample_order_data)
-    aggregate_spend = calculate_customer_aggregate_spend(order_summary)
-
-    assert aggregate_spend is not None
-    assert aggregate_spend.count() > 0
-
-    # Verify required columns
-    assert "name" in aggregate_spend.columns
-    assert "date" in aggregate_spend.columns
-    assert "totalspend" in aggregate_spend.columns
-
-    # Verify aggregation logic
-    # John Doe (C001) has 2 orders on different dates
-    john_records = aggregate_spend.filter(aggregate_spend["name"] == "John Doe")
-    assert john_records.count() == 2
-
-
-def test_calculate_customer_aggregate_spend_amounts(spark, sample_customer_data, sample_order_data):
-    """Test customer aggregate spend calculation amounts are correct"""
-    order_summary = create_order_summary(sample_customer_data, sample_order_data)
-    aggregate_spend = calculate_customer_aggregate_spend(order_summary)
-
-    # Verify John Doe's spending on 2024-01-15 (1 Laptop = 1200.00)
-    john_jan15 = aggregate_spend.filter(
-        (aggregate_spend["name"] == "John Doe") &
-        (aggregate_spend["date"] == "2024-01-15")
-    ).collect()
-
-    if len(john_jan15) > 0:
-        assert float(john_jan15[0]["totalspend"]) == 1200.00
-
-
-def test_calculate_customer_aggregate_spend_with_none_input():
-    """Test aggregate spend calculation handles None input gracefully"""
-    result = calculate_customer_aggregate_spend(None)
-    assert result is None
-
-
-def test_data_reader_read_csv(spark):
-    """Test DataReader CSV reading with mocked Spark read"""
-    glue_context = MagicMock()
-    reader = DataReader(spark, glue_context)
-
-    # Create mock DataFrame
-    mock_df = spark.createDataFrame([("C001", "John Doe")], ["custid", "name"])
-
-    with patch.object(spark.read, 'format') as mock_format:
-        mock_format.return_value.option.return_value.option.return_value.option.return_value.load.return_value = mock_df
-
-        result = reader.read_csv("s3://test-bucket/data/")
-
-        assert result is not None
-        assert result.count() == 1
-
-
-def test_data_reader_read_csv_invalid_path(spark):
-    """Test DataReader handles invalid S3 path"""
-    glue_context = MagicMock()
-    reader = DataReader(spark, glue_context)
-
-    result = reader.read_csv("/invalid/path")
-    assert result is None
-
-
-def test_data_writer_write_dataframe_parquet(spark, sample_customer_data):
-    """Test DataWriter Parquet writing"""
-    glue_context = MagicMock()
-    writer = DataWriter(spark, glue_context)
-
-    with patch.object(writer, '_write_parquet') as mock_write:
-        result = writer.write_dataframe(
-            sample_customer_data,
-            "s3://test-bucket/output/",
-            format_type="parquet"
+    # Mock the internal read method
+    with patch.object(reader, '_read_csv_internal', return_value=sample_df):
+        result_df = reader.read_data_safe(
+            path='s3://test-bucket/customer/',
+            expected_schema=['CustId', 'Name', 'EmailId', 'Region'],
+            data_type='customer'
         )
 
-        assert result == True
-        mock_write.assert_called_once()
+    assert result_df is not None
+    assert result_df.count() == 3
+    assert set(result_df.columns) == {'custid', 'name', 'emailid', 'region'}
+
+    # Verify logging
+    assert logger.info.called
+    assert any('Successfully loaded' in str(call) for call in logger.info.call_args_list)
 
 
-def test_data_writer_write_dataframe_hudi(spark, sample_customer_data):
-    """Test DataWriter Hudi writing"""
-    glue_context = MagicMock()
-    writer = DataWriter(spark, glue_context)
+def test_s3_data_reader_reads_order_data():
+    """Test S3DataReader reads and validates order data"""
+    from main.job import S3DataReader
+
+    logger = Mock()
+    reader = S3DataReader(spark, logger)
+
+    # Create sample order data
+    order_data = [
+        ('O001', 'Laptop', 1200.00, 1, '2024-01-15', 'C001'),
+        ('O002', 'Mouse', 25.50, 2, '2024-01-16', 'C002'),
+        ('O003', 'Keyboard', 75.00, 1, '2024-01-17', 'C003')
+    ]
+
+    sample_df = spark.createDataFrame(
+        order_data,
+        ['OrderId', 'ItemName', 'PricePerUnit', 'Qty', 'Date', 'CustId']
+    )
+
+    # Mock the internal read method
+    with patch.object(reader, '_read_csv_internal', return_value=sample_df):
+        result_df = reader.read_data_safe(
+            path='s3://test-bucket/order/',
+            expected_schema=['OrderId', 'ItemName', 'PricePerUnit', 'Qty', 'Date', 'CustId'],
+            data_type='order'
+        )
+
+    assert result_df is not None
+    assert result_df.count() == 3
+    assert set(result_df.columns) == {'orderid', 'itemname', 'priceperunit', 'qty', 'date', 'custid'}
+
+
+def test_s3_data_reader_validates_schema():
+    """Test S3DataReader validates schema correctly"""
+    from main.job import S3DataReader
+
+    logger = Mock()
+    reader = S3DataReader(spark, logger)
+
+    # Create data with wrong schema
+    wrong_data = [
+        ('C001', 'John Doe', 'North'),  # Missing EmailId column
+    ]
+
+    sample_df = spark.createDataFrame(
+        wrong_data,
+        ['CustId', 'Name', 'Region']
+    )
+
+    # Mock the internal read method
+    with patch.object(reader, '_read_csv_internal', return_value=sample_df):
+        try:
+            reader.read_data_safe(
+                path='s3://test-bucket/customer/',
+                expected_schema=['CustId', 'Name', 'EmailId', 'Region'],
+                data_type='customer'
+            )
+            assert False, "Should have raised ValueError"
+        except ValueError as e:
+            assert 'Schema validation failed' in str(e)
+            assert logger.error.called
+
+
+def test_data_quality_transformer_removes_nulls():
+    """Test DataQualityTransformer removes NULL values"""
+    from main.job import DataQualityTransformer
+
+    logger = Mock()
+    transformer = DataQualityTransformer(logger)
+
+    # Create data with NULLs
+    data_with_nulls = [
+        ('C001', 'John Doe', 'john@example.com', 'North'),
+        ('C002', None, 'jane@example.com', 'South'),
+        ('C003', 'Bob Johnson', 'Null', 'East'),
+        (None, 'Alice Brown', 'alice@example.com', 'West')
+    ]
+
+    df = spark.createDataFrame(
+        data_with_nulls,
+        ['custid', 'name', 'emailid', 'region']
+    )
+
+    result_df = transformer.remove_nulls(df, 'customer')
+
+    assert result_df.count() == 1  # Only first row should remain
+    assert result_df.first()['custid'] == 'C001'
+    assert logger.info.called
+
+
+def test_data_quality_transformer_removes_duplicates():
+    """Test DataQualityTransformer removes duplicate records"""
+    from main.job import DataQualityTransformer
+
+    logger = Mock()
+    transformer = DataQualityTransformer(logger)
+
+    # Create data with duplicates
+    data_with_dupes = [
+        ('C001', 'John Doe', 'john@example.com', 'North'),
+        ('C002', 'Jane Smith', 'jane@example.com', 'South'),
+        ('C001', 'John Doe', 'john@example.com', 'North'),  # Duplicate
+        ('C003', 'Bob Johnson', 'bob@example.com', 'East')
+    ]
+
+    df = spark.createDataFrame(
+        data_with_dupes,
+        ['custid', 'name', 'emailid', 'region']
+    )
+
+    result_df = transformer.remove_duplicates(df, 'customer')
+
+    assert result_df.count() == 3  # Should have 3 unique records
+    assert logger.info.called
+
+
+def test_s3_data_writer_writes_parquet():
+    """Test S3DataWriter writes data in Parquet format"""
+    from main.job import S3DataWriter
+
+    logger = Mock()
+    glueContext = Mock()
+    writer = S3DataWriter(spark, glueContext, logger)
+
+    # Create sample data
+    data = [
+        ('C001', 'John Doe', 'john@example.com', 'North'),
+        ('C002', 'Jane Smith', 'jane@example.com', 'South')
+    ]
+
+    df = spark.createDataFrame(
+        data,
+        ['custid', 'name', 'emailid', 'region']
+    )
+
+    # Mock the internal write methods
+    with patch.object(writer, '_write_parquet') as mock_write:
+        writer.write_data_safe(
+            df=df,
+            path='s3://test-bucket/customer/',
+            table_name='test_customer',
+            database_name='test_db',
+            data_type='customer'
+        )
+
+        assert mock_write.called
+        assert logger.info.called
+
+
+def test_s3_data_writer_writes_hudi_scd2():
+    """Test S3DataWriter writes Hudi format with SCD Type 2 columns"""
+    from main.job import S3DataWriter
+
+    logger = Mock()
+    glueContext = Mock()
+    writer = S3DataWriter(spark, glueContext, logger)
+
+    # Create sample order summary data
+    data = [
+        ('O001', 'Laptop', 1200.00, 1, '2024-01-15', 'C001', 'John Doe', 'john@example.com', 'North', 1200.00)
+    ]
+
+    df = spark.createDataFrame(
+        data,
+        ['orderid', 'itemname', 'priceperunit', 'qty', 'date', 'custid', 'name', 'emailid', 'region', 'totalamount']
+    )
 
     hudi_config = {
-        "table_name": "test_table",
-        "record_key": "custid",
-        "precombine_field": "opts"
+        'hudi_table_name': 'ordersummary',
+        'hudi_record_key': 'orderid',
+        'hudi_precombine_field': 'OpTs',
+        'hudi_partition_field': 'date',
+        'hudi_operation': 'upsert'
     }
 
+    # Mock the internal write method
     with patch.object(writer, '_write_hudi') as mock_write:
-        result = writer.write_dataframe(
-            sample_customer_data,
-            "s3://test-bucket/output/",
-            format_type="hudi",
-            hudi_config=hudi_config
+        writer.write_hudi_scd2(
+            df=df,
+            path='s3://test-bucket/ordersummary/',
+            hudi_config=hudi_config,
+            data_type='order_summary'
         )
 
-        assert result == True
-        mock_write.assert_called_once()
+        assert mock_write.called
+
+        # Verify SCD Type 2 columns were added
+        call_args = mock_write.call_args
+        df_with_scd = call_args[0][0]
+        assert 'IsActive' in df_with_scd.columns
+        assert 'StartDate' in df_with_scd.columns
+        assert 'EndDate' in df_with_scd.columns
+        assert 'OpTs' in df_with_scd.columns
 
 
-def test_data_writer_write_dataframe_invalid_path(spark, sample_customer_data):
-    """Test DataWriter handles invalid S3 path"""
-    glue_context = MagicMock()
-    writer = DataWriter(spark, glue_context)
+def test_order_summary_processor_creates_summary():
+    """Test OrderSummaryProcessor creates order summary correctly"""
+    from main.job import OrderSummaryProcessor
 
-    result = writer.write_dataframe(sample_customer_data, "/invalid/path")
-    assert result == False
+    logger = Mock()
+    processor = OrderSummaryProcessor(logger)
+
+    # Create sample customer data
+    customer_data = [
+        ('C001', 'John Doe', 'john@example.com', 'North'),
+        ('C002', 'Jane Smith', 'jane@example.com', 'South')
+    ]
+
+    customer_df = spark.createDataFrame(
+        customer_data,
+        ['custid', 'name', 'emailid', 'region']
+    )
+
+    # Create sample order data
+    order_data = [
+        ('O001', 'Laptop', 1200.00, 1, '2024-01-15', 'C001'),
+        ('O002', 'Mouse', 25.50, 2, '2024-01-16', 'C002')
+    ]
+
+    order_df = spark.createDataFrame(
+        order_data,
+        ['orderid', 'itemname', 'priceperunit', 'qty', 'date', 'custid']
+    )
+
+    result_df = processor.create_order_summary(customer_df, order_df)
+
+    assert result_df is not None
+    assert result_df.count() == 2
+    assert 'TotalAmount' in result_df.columns
+    assert 'name' in result_df.columns
+    assert 'emailid' in result_df.columns
+    assert 'region' in result_df.columns
+
+    # Verify TotalAmount calculation
+    first_row = result_df.filter(result_df.orderid == 'O001').first()
+    assert first_row['TotalAmount'] == 1200.00
+
+    second_row = result_df.filter(result_df.orderid == 'O002').first()
+    assert second_row['TotalAmount'] == 51.00  # 25.50 * 2
 
 
-def test_data_writer_write_dataframe_empty_df(spark):
-    """Test DataWriter handles empty DataFrame"""
-    glue_context = MagicMock()
-    writer = DataWriter(spark, glue_context)
+def test_aggregation_processor_calculates_spend():
+    """Test AggregationProcessor calculates customer aggregate spend"""
+    from main.job import AggregationProcessor
 
-    empty_df = spark.createDataFrame([], StructType([]))
-    result = writer.write_dataframe(empty_df, "s3://test-bucket/output/")
-    assert result == False
+    logger = Mock()
+    processor = AggregationProcessor(logger)
+
+    # Create sample order summary data
+    order_summary_data = [
+        ('O001', 'Laptop', 1200.00, 1, '2024-01-15', 'C001', 'John Doe', 'john@example.com', 'North', 1200.00),
+        ('O002', 'Mouse', 25.50, 2, '2024-01-15', 'C001', 'John Doe', 'john@example.com', 'North', 51.00),
+        ('O003', 'Keyboard', 75.00, 1, '2024-01-16', 'C001', 'John Doe', 'john@example.com', 'North', 75.00),
+        ('O004', 'Monitor', 300.00, 1, '2024-01-15', 'C002', 'Jane Smith', 'jane@example.com', 'South', 300.00)
+    ]
+
+    order_summary_df = spark.createDataFrame(
+        order_summary_data,
+        ['orderid', 'itemname', 'priceperunit', 'qty', 'date', 'custid', 'name', 'emailid', 'region', 'TotalAmount']
+    )
+
+    result_df = processor.calculate_customer_aggregate_spend(order_summary_df)
+
+    assert result_df is not None
+    assert result_df.count() == 3  # C001 has 2 dates, C002 has 1 date
+    assert 'TotalSpend' in result_df.columns
+
+    # Verify aggregation for C001 on 2024-01-15
+    c001_jan15 = result_df.filter(
+        (result_df.custid == 'C001') & (result_df.date == '2024-01-15')
+    ).first()
+    assert c001_jan15['TotalSpend'] == 1251.00  # 1200 + 51
+
+    # Verify aggregation for C001 on 2024-01-16
+    c001_jan16 = result_df.filter(
+        (result_df.custid == 'C001') & (result_df.date == '2024-01-16')
+    ).first()
+    assert c001_jan16['TotalSpend'] == 75.00
 
 
-def test_data_writer_write_to_catalog(spark, sample_customer_data):
-    """Test DataWriter catalog writing"""
-    glue_context = MagicMock()
-    writer = DataWriter(spark, glue_context)
+def test_end_to_end_pipeline():
+    """Test end-to-end pipeline execution"""
+    from main.job import (
+        ConfigManager, S3DataReader, DataQualityTransformer,
+        S3DataWriter, OrderSummaryProcessor, AggregationProcessor
+    )
 
-    # Mock DynamicFrame
-    with patch('main.job.DynamicFrame') as mock_df:
-        mock_df.fromDF.return_value = MagicMock()
+    logger = Mock()
+    glueContext = Mock()
 
-        result = writer.write_to_catalog(
-            sample_customer_data,
-            "test_db",
-            "test_table",
-            "s3://test-bucket/output/"
+    # Initialize components
+    reader = S3DataReader(spark, logger)
+    quality = DataQualityTransformer(logger)
+    writer = S3DataWriter(spark, glueContext, logger)
+    order_processor = OrderSummaryProcessor(logger)
+    agg_processor = AggregationProcessor(logger)
+
+    # Create sample customer data
+    customer_data = [
+        ('C001', 'John Doe', 'john@example.com', 'North'),
+        ('C002', 'Jane Smith', 'jane@example.com', 'South'),
+        ('C003', 'Bob Johnson', None, 'East'),  # Will be removed
+        ('C001', 'John Doe', 'john@example.com', 'North')  # Duplicate
+    ]
+
+    customer_df = spark.createDataFrame(
+        customer_data,
+        ['CustId', 'Name', 'EmailId', 'Region']
+    )
+
+    # Create sample order data
+    order_data = [
+        ('O001', 'Laptop', 1200.00, 1, '2024-01-15', 'C001'),
+        ('O002', 'Mouse', 25.50, 2, '2024-01-16', 'C002'),
+        ('O003', 'Keyboard', None, 1, '2024-01-17', 'C001'),  # Will be removed
+        ('O001', 'Laptop', 1200.00, 1, '2024-01-15', 'C001')  # Duplicate
+    ]
+
+    order_df = spark.createDataFrame(
+        order_data,
+        ['OrderId', 'ItemName', 'PricePerUnit', 'Qty', 'Date', 'CustId']
+    )
+
+    # Mock reader
+    with patch.object(reader, '_read_csv_internal', side_effect=[customer_df, order_df]):
+        customer_df_read = reader.read_data_safe(
+            path='s3://test/customer/',
+            expected_schema=['CustId', 'Name', 'EmailId', 'Region'],
+            data_type='customer'
         )
 
-        # Should attempt catalog write (may fail but that's ok for test)
-        assert result in [True, False]
+        order_df_read = reader.read_data_safe(
+            path='s3://test/order/',
+            expected_schema=['OrderId', 'ItemName', 'PricePerUnit', 'Qty', 'Date', 'CustId'],
+            data_type='order'
+        )
 
+    # Clean data
+    customer_df_clean = quality.remove_nulls(customer_df_read, 'customer')
+    customer_df_final = quality.remove_duplicates(customer_df_clean, 'customer')
 
-def test_column_normalization(spark):
-    """Test that column names are normalized to lowercase"""
-    glue_context = MagicMock()
-    reader = DataReader(spark, glue_context)
+    order_df_clean = quality.remove_nulls(order_df_read, 'order')
+    order_df_final = quality.remove_duplicates(order_df_clean, 'order')
 
-    # Create DataFrame with mixed case columns
-    mock_df = spark.createDataFrame([("C001", "John")], ["CustId", "Name"])
+    # Verify cleaning
+    assert customer_df_final.count() == 2  # C001, C002 (C003 removed for null, duplicate removed)
+    assert order_df_final.count() == 2  # O001, O002 (O003 removed for null, duplicate removed)
 
-    with patch.object(spark.read, 'format') as mock_format:
-        mock_format.return_value.option.return_value.option.return_value.option.return_value.load.return_value = mock_df
+    # Create order summary
+    order_summary_df = order_processor.create_order_summary(customer_df_final, order_df_final)
+    assert order_summary_df.count() == 2
 
-        result = reader.read_csv("s3://test-bucket/data/")
+    # Calculate aggregate spend
+    aggregate_spend_df = agg_processor.calculate_customer_aggregate_spend(order_summary_df)
+    assert aggregate_spend_df.count() == 2  # One per customer per date
 
-        # Verify columns are lowercase
-        assert "custid" in result.columns
-        assert "name" in result.columns
-        assert "CustId" not in result.columns
-        assert "Name" not in result.columns
+    # Mock writer
+    with patch.object(writer, '_write_parquet'):
+        writer.write_data_safe(
+            df=customer_df_final,
+            path='s3://test/customer/',
+            table_name='test_customer',
+            database_name='test_db',
+            data_type='customer'
+        )
 
+        writer.write_data_safe(
+            df=order_df_final,
+            path='s3://test/order/',
+            table_name='test_order',
+            database_name='test_db',
+            data_type='order'
+        )
 
-def test_end_to_end_pipeline(spark, sample_customer_data, sample_order_data):
-    """Test complete end-to-end pipeline flow"""
-    # Step 1: Clean data
-    customer_clean = clean_dataframe(sample_customer_data, "customer")
-    order_clean = clean_dataframe(sample_order_data, "order")
+    with patch.object(writer, '_write_hudi'):
+        writer.write_hudi_scd2(
+            df=order_summary_df,
+            path='s3://test/ordersummary/',
+            hudi_config={},
+            data_type='order_summary'
+        )
 
-    assert customer_clean is not None
-    assert order_clean is not None
-
-    # Step 2: Add SCD2 columns
-    customer_scd2 = add_scd2_columns(customer_clean)
-    assert "isactive" in customer_scd2.columns
-
-    # Step 3: Create order summary
-    order_summary = create_order_summary(customer_clean, order_clean)
-    assert order_summary is not None
-    assert order_summary.count() == 5
-
-    # Step 4: Calculate aggregate spend
-    aggregate_spend = calculate_customer_aggregate_spend(order_summary)
-    assert aggregate_spend is not None
-    assert aggregate_spend.count() > 0
-
-    # Verify final output has required columns
-    assert "name" in aggregate_spend.columns
-    assert "date" in aggregate_spend.columns
-    assert "totalspend" in aggregate_spend.columns
+    with patch.object(writer, '_write_parquet'):
+        writer.write_data_safe(
+            df=aggregate_spend_df,
+            path='s3://test/analytics/',
+            table_name='test_analytics',
+            database_name='test_db',
+            data_type='analytics'
+        )
 
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+    print("Running tests...")
+
+    test_config_manager_loads_parameters()
+    print("✓ test_config_manager_loads_parameters")
+
+    test_s3_data_reader_reads_customer_data()
+    print("✓ test_s3_data_reader_reads_customer_data")
+
+    test_s3_data_reader_reads_order_data()
+    print("✓ test_s3_data_reader_reads_order_data")
+
+    test_s3_data_reader_validates_schema()
+    print("✓ test_s3_data_reader_validates_schema")
+
+    test_data_quality_transformer_removes_nulls()
+    print("✓ test_data_quality_transformer_removes_nulls")
+
+    test_data_quality_transformer_removes_duplicates()
+    print("✓ test_data_quality_transformer_removes_duplicates")
+
+    test_s3_data_writer_writes_parquet()
+    print("✓ test_s3_data_writer_writes_parquet")
+
+    test_s3_data_writer_writes_hudi_scd2()
+    print("✓ test_s3_data_writer_writes_hudi_scd2")
+
+    test_order_summary_processor_creates_summary()
+    print("✓ test_order_summary_processor_creates_summary")
+
+    test_aggregation_processor_calculates_spend()
+    print("✓ test_aggregation_processor_calculates_spend")
+
+    test_end_to_end_pipeline()
+    print("✓ test_end_to_end_pipeline")
+
+    print("\nAll tests passed!")

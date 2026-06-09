@@ -1,47 +1,35 @@
 # AWS Glue Job Parameters Configuration
 
 # Input Sources
-inputs_customer_source_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
-inputs_customer_source_format: "csv"
+inputs_source_customer_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
+inputs_source_order_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
+inputs_source_format: "csv"
+inputs_csv_delimiter: ","
+inputs_csv_header: "true"
 
-inputs_order_source_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
-inputs_order_source_format: "csv"
+# Output Targets - Curated Layer
+outputs_target_customer_path: "s3://adif-sdlc/curated/sdlc_wizard/customer/"
+outputs_target_order_path: "s3://adif-sdlc/curated/sdlc_wizard/order/"
+outputs_target_ordersummary_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
 
-# Output Targets
-outputs_curated_customer_path: "s3://adif-sdlc/curated/sdlc_wizard/customer/"
-outputs_curated_order_path: "s3://adif-sdlc/curated/sdlc_wizard/order/"
-outputs_curated_ordersummary_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
+# Output Targets - Analytics Layer
+outputs_target_analytics_path: "s3://adif-sdlc/analytics/customeraggregatespend/"
 
-outputs_state_customer_baseline_path: "s3://adif-sdlc/state/sdlc_wizard/customer_baseline/"
+# Glue Data Catalog Configuration
+catalog_database_name: "sdlc_wizard_db"
+catalog_table_customer: "sdlc_wizard_customer"
+catalog_table_order: "sdlc_wizard_order"
+catalog_table_ordersummary: "sdlc_wizard_ordersummary"
+catalog_table_analytics: "customeraggregatespend"
 
-outputs_analytics_customeraggregatespend_path: "s3://adif-sdlc/analytics/customeraggregatespend/"
-
-# Glue Catalog Configuration
-catalog_database_name: "gen_ai_poc_databrickscoe"
-catalog_customer_table_name: "customer"
-catalog_order_table_name: "order"
-catalog_ordersummary_table_name: "ordersummary"
-catalog_customeraggregatespend_table_name: "customeraggregatespend"
-
-# Hudi Configuration
-hudi_table_name: "customer_baseline"
-hudi_record_key: "custid"
-hudi_precombine_field: "opts"
-hudi_partition_path: ""
-hudi_table_type: "COPY_ON_WRITE"
+# Hudi Configuration for SCD Type 2
+hudi_table_name: "ordersummary"
+hudi_record_key: "OrderId"
+hudi_precombine_field: "OpTs"
+hudi_partition_field: "Date"
 hudi_operation: "upsert"
 
 # Processing Options
-enable_scd2: true
-enable_incremental_processing: true
-enable_data_quality_checks: true
-
-# CSV Read Options
-csv_header: true
-csv_infer_schema: true
-csv_separator: ","
-
-# Write Options
-output_format: "parquet"
-output_mode: "overwrite"
-output_compression: "snappy"
+enable_job_bookmark: "true"
+enable_data_quality: "true"
+enable_scd_type2: "true"

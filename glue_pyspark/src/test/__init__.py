@@ -1,3 +1,3 @@
 """
-AWS Glue PySpark ETL Pipeline - Test Package
+Test package for Customer Order Pipeline
 """
