@@ -1,37 +1,51 @@
 # AWS Glue Job Parameters Configuration
 
-# Input Configuration
+# Input Sources
 inputs_customer_source_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
 inputs_customer_source_format: "csv"
 inputs_order_source_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
 inputs_order_source_format: "csv"
 
-# Output Configuration
-outputs_customer_target_path: "s3://adif-sdlc/catalog/sdlc_wizard/customer/"
-outputs_customer_target_format: "parquet"
-outputs_order_target_path: "s3://adif-sdlc/catalog/sdlc_wizard/order/"
-outputs_order_target_format: "parquet"
-outputs_ordersummary_target_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
-outputs_ordersummary_target_format: "hudi"
+# Output Targets
+outputs_customer_catalog_path: "s3://adif-sdlc/catalog/sdlc_wizard/customer/"
+outputs_order_catalog_path: "s3://adif-sdlc/catalog/sdlc_wizard/order/"
+outputs_ordersummary_hudi_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
+outputs_customeraggregatespend_path: "s3://adif-sdlc/analytics/customeraggregatespend/"
 
-# Glue Catalog Configuration
+# Glue Data Catalog Configuration
 catalog_database_name: "gen_ai_poc_databrickscoe"
 catalog_customer_table_name: "customer"
 catalog_order_table_name: "order"
 catalog_ordersummary_table_name: "ordersummary"
+catalog_customeraggregatespend_table_name: "customeraggregatespend"
 
-# Hudi Configuration
+# Data Quality Configuration
+dq_remove_nulls: true
+dq_remove_null_strings: true
+dq_remove_duplicates: true
+
+# Hudi Configuration for SCD Type 2
 hudi_table_name: "ordersummary"
 hudi_record_key: "OrderId"
-hudi_precombine_key: "OpTs"
-hudi_partition_path: "Region"
-hudi_table_type: "COPY_ON_WRITE"
+hudi_precombine_field: "OpTs"
+hudi_partition_path: "Date"
 hudi_operation: "upsert"
+hudi_table_type: "COPY_ON_WRITE"
 
-# Processing Configuration
-csv_header: "true"
+# SCD Type 2 Configuration
+scd_enable: true
+scd_active_column: "IsActive"
+scd_start_date_column: "StartDate"
+scd_end_date_column: "EndDate"
+scd_operation_timestamp_column: "OpTs"
+
+# CSV Read Options
+csv_header: true
+csv_infer_schema: true
 csv_delimiter: ","
-csv_infer_schema: "true"
+csv_encoding: "UTF-8"
 
-# Temp Path
-temp_path: "s3://adif-sdlc/temp/"
+# Write Options
+write_mode: "overwrite"
+write_format_parquet: "parquet"
+write_format_hudi: "hudi"

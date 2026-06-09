@@ -1,14 +1,6 @@
 CustId,Name,EmailId,Region
-1,John Doe,john.doe@email.com,East
-2,Jane Smith,jane.smith@email.com,West
-3,Bob Jones,bob.jones@email.com,North
-4,Alice Brown,alice.brown@email.com,South
-5,Charlie Wilson,charlie.wilson@email.com,East
-6,Diana Prince,diana.prince@email.com,West
-7,Eve Davis,eve.davis@email.com,North
-8,Frank Miller,frank.miller@email.com,South
-9,Grace Lee,grace.lee@email.com,East
-10,Henry Taylor,henry.taylor@email.com,West
-2,Jane Smith,jane.smith@email.com,West
-11,Invalid User,Null,East
-12,Null User,null.user@email.com,Null
+1,John Doe,john.doe@example.com,North
+2,Jane Smith,jane.smith@example.com,South
+3,Bob Johnson,bob.johnson@example.com,East
+4,Alice Williams,alice.williams@example.com,West
+5,Charlie Brown,charlie.brown@example.com,North

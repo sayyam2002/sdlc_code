@@ -1,11 +1,11 @@
 """
-Unit tests for AWS Glue PySpark ETL Job
-Tests all transformation logic without performing real I/O operations
+Comprehensive tests for AWS Glue PySpark Job
+Tests all transformations with mocked Spark I/O
 """
 
 import sys
 import os
-from unittest.mock import patch, MagicMock, Mock
+from unittest.mock import patch, MagicMock
 from datetime import datetime
 
 # Add src to path for imports
@@ -15,44 +15,35 @@ from pyspark.sql import SparkSession
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType
 
 
-# Initialize Spark session for testing
-def get_spark():
-    """Get or create Spark session for testing"""
-    if hasattr(sys.modules['builtins'], 'spark'):
-        return getattr(sys.modules['builtins'], 'spark')
-
-    spark = SparkSession.builder \
-        .appName("test-customer-order-etl") \
-        .master("local[2]") \
-        .config("spark.sql.shuffle.partitions", "2") \
-        .getOrCreate()
-
-    return spark
-
-
-spark = get_spark()
+# Initialize Spark session for tests
+spark = SparkSession.builder \
+    .appName("test_job") \
+    .master("local[2]") \
+    .getOrCreate()
 
 
 def test_get_job_parameters():
-    """Test job parameters loading"""
+    """Test job parameter loading"""
     from main.job import get_job_parameters
 
     params = get_job_parameters()
 
-    # Verify required parameters exist
+    assert params is not None
     assert 'inputs_customer_source_path' in params
     assert 'inputs_order_source_path' in params
-    assert 'outputs_customer_target_path' in params
-    assert 'outputs_order_target_path' in params
-    assert 'outputs_ordersummary_target_path' in params
     assert 'catalog_database_name' in params
-    assert 'hudi_table_name' in params
+    assert params['catalog_database_name'] == 'gen_ai_poc_databrickscoe'
 
-    # Verify S3 paths
-    assert params['inputs_customer_source_path'].startswith('s3://')
-    assert params['inputs_order_source_path'].startswith('s3://')
 
-    print("✓ test_get_job_parameters passed")
+def test_validate_s3_path():
+    """Test S3 path validation"""
+    from main.job import validate_s3_path
+
+    assert validate_s3_path('s3://bucket/path') == True
+    assert validate_s3_path('s3a://bucket/path') == True
+    assert validate_s3_path('/local/path') == False
+    assert validate_s3_path('') == False
+    assert validate_s3_path(None) == False
 
 
 def test_normalize_columns():
@@ -60,309 +51,520 @@ def test_normalize_columns():
     from main.job import normalize_columns
 
     # Create test DataFrame with mixed case columns
-    data = [('John', 'Doe', 30)]
-    df = spark.createDataFrame(data, ['FirstName', 'LastName', 'Age'])
+    data = [('1', 'John', 'john@example.com', 'North')]
+    schema = StructType([
+        StructField('CustId', StringType(), True),
+        StructField('Name', StringType(), True),
+        StructField('EmailId', StringType(), True),
+        StructField('Region', StringType(), True)
+    ])
+    df = spark.createDataFrame(data, schema)
 
     # Normalize columns
     normalized_df = normalize_columns(df)
 
     # Verify all columns are lowercase
-    assert normalized_df.columns == ['firstname', 'lastname', 'age']
+    assert 'custid' in normalized_df.columns
+    assert 'name' in normalized_df.columns
+    assert 'emailid' in normalized_df.columns
+    assert 'region' in normalized_df.columns
+    assert 'CustId' not in normalized_df.columns
 
-    print("✓ test_normalize_columns passed")
 
+def test_apply_data_quality():
+    """Test data quality rules"""
+    from main.job import apply_data_quality
 
-def test_remove_nulls():
-    """Test NULL and 'Null' string removal"""
-    from main.job import remove_nulls
-
-    # Create test DataFrame with NULLs and 'Null' strings
+    # Create test data with quality issues
     data = [
-        ('1', 'John', 'john@email.com', 'East'),
-        ('2', 'Jane', None, 'West'),
-        ('3', 'Bob', 'bob@email.com', 'Null'),
-        ('4', 'Alice', 'alice@email.com', 'North'),
-        (None, 'Charlie', 'charlie@email.com', 'South')
+        ('1', 'John', 'john@example.com', 'North'),
+        ('2', 'Jane', 'Null', 'South'),
+        ('3', None, 'bob@example.com', 'East'),
+        ('1', 'John', 'john@example.com', 'North'),  # Duplicate
+        ('4', 'Alice', 'alice@example.com', 'West')
     ]
-    df = spark.createDataFrame(data, ['custid', 'name', 'emailid', 'region'])
+    schema = StructType([
+        StructField('custid', StringType(), True),
+        StructField('name', StringType(), True),
+        StructField('emailid', StringType(), True),
+        StructField('region', StringType(), True)
+    ])
+    df = spark.createDataFrame(data, schema)
 
-    # Remove nulls
-    cleaned_df = remove_nulls(df)
-
-    # Verify only valid records remain
-    assert cleaned_df.count() == 2
-    result = cleaned_df.collect()
-    assert result[0]['custid'] == '1'
-    assert result[1]['custid'] == '4'
-
-    print("✓ test_remove_nulls passed")
-
-
-def test_remove_duplicates():
-    """Test duplicate record removal"""
-    from main.job import remove_duplicates
-
-    # Create test DataFrame with duplicates
-    data = [
-        ('1', 'John', 'john@email.com', 'East'),
-        ('1', 'John', 'john@email.com', 'East'),
-        ('2', 'Jane', 'jane@email.com', 'West'),
-        ('2', 'Jane', 'jane@email.com', 'West'),
-        ('3', 'Bob', 'bob@email.com', 'North')
-    ]
-    df = spark.createDataFrame(data, ['custid', 'name', 'emailid', 'region'])
-
-    # Remove duplicates
-    deduped_df = remove_duplicates(df)
-
-    # Verify duplicates removed
-    assert deduped_df.count() == 3
-
-    print("✓ test_remove_duplicates passed")
-
-
-def test_add_scd_columns():
-    """Test SCD Type 2 column addition"""
-    from main.job import add_scd_columns
-
-    # Create test DataFrame
-    data = [('1', 'John', 'john@email.com', 'East')]
-    df = spark.createDataFrame(data, ['custid', 'name', 'emailid', 'region'])
-
-    # Add SCD columns
-    scd_df = add_scd_columns(df)
-
-    # Verify SCD columns exist
-    assert 'IsActive' in scd_df.columns
-    assert 'StartDate' in scd_df.columns
-    assert 'EndDate' in scd_df.columns
-    assert 'OpTs' in scd_df.columns
-
-    # Verify values
-    result = scd_df.collect()[0]
-    assert result['IsActive'] == True
-    assert result['StartDate'] is not None
-    assert result['EndDate'] is None
-    assert result['OpTs'] is not None
-
-    print("✓ test_add_scd_columns passed")
-
-
-@patch('main.job.boto3.client')
-def test_validate_s3_access(mock_boto_client):
-    """Test S3 access validation"""
-    from main.job import validate_s3_access
-
-    # Mock S3 client
-    mock_s3 = MagicMock()
-    mock_s3.list_objects_v2.return_value = {'Contents': []}
-    mock_boto_client.return_value = mock_s3
-
-    # Test validation
-    result = validate_s3_access('s3://adif-sdlc/sdlc_wizard/customerdata/')
-
-    assert result == True
-    mock_s3.list_objects_v2.assert_called_once()
-
-    print("✓ test_validate_s3_access passed")
-
-
-def test_data_reader_read_csv():
-    """Test DataReader CSV reading with mocked Spark read"""
-    from main.job import DataReader
-
-    # Create mock data
-    customer_data = [
-        ('1', 'John Doe', 'john@email.com', 'East'),
-        ('2', 'Jane Smith', 'jane@email.com', 'West')
-    ]
-    mock_df = spark.createDataFrame(customer_data, ['custid', 'name', 'emailid', 'region'])
-
-    # Patch the internal _read_csv method
-    with patch.object(DataReader, '_read_csv', return_value=mock_df):
-        reader = DataReader(spark)
-        df = reader.read_data_safe(
-            's3://adif-sdlc/sdlc_wizard/customerdata/',
-            format_type='csv',
-            header='true',
-            delimiter=',',
-            infer_schema='true'
-        )
-
-        assert df is not None
-        assert df.count() == 2
-        assert 'custid' in df.columns
-
-    print("✓ test_data_reader_read_csv passed")
-
-
-def test_data_writer_write_parquet():
-    """Test DataWriter Parquet writing with mocked write"""
-    from main.job import DataWriter
-
-    # Create test DataFrame
-    data = [('1', 'John', 'john@email.com', 'East')]
-    df = spark.createDataFrame(data, ['custid', 'name', 'emailid', 'region'])
-
-    # Patch the internal _write_parquet method
-    with patch.object(DataWriter, '_write_parquet', return_value=None):
-        writer = DataWriter(spark)
-        result = writer.write_data_safe(
-            df,
-            's3://adif-sdlc/catalog/sdlc_wizard/customer/',
-            format_type='parquet',
-            mode='overwrite'
-        )
-
-        assert result == True
-
-    print("✓ test_data_writer_write_parquet passed")
-
-
-def test_data_writer_write_hudi():
-    """Test DataWriter Hudi writing with mocked write"""
-    from main.job import DataWriter
-
-    # Create test DataFrame with SCD columns
-    data = [('1', 'John', 'john@email.com', 'East', True, datetime.now(), None, datetime.now())]
-    df = spark.createDataFrame(
-        data,
-        ['custid', 'name', 'emailid', 'region', 'IsActive', 'StartDate', 'EndDate', 'OpTs']
-    )
-
-    hudi_options = {
-        'hoodie.table.name': 'ordersummary',
-        'hoodie.datasource.write.recordkey.field': 'custid',
-        'hoodie.datasource.write.precombine.field': 'OpTs'
+    params = {
+        'dq_remove_nulls': True,
+        'dq_remove_null_strings': True,
+        'dq_remove_duplicates': True
     }
 
-    # Patch the internal _write_hudi method
-    with patch.object(DataWriter, '_write_hudi', return_value=None):
-        writer = DataWriter(spark)
-        result = writer.write_data_safe(
-            df,
-            's3://adif-sdlc/curated/sdlc_wizard/ordersummary/',
-            format_type='hudi',
-            mode='append',
-            **hudi_options
-        )
+    # Apply data quality
+    cleaned_df = apply_data_quality(df, params)
 
-        assert result == True
+    # Verify cleaning
+    assert cleaned_df.count() == 2  # Only 2 valid unique records
 
-    print("✓ test_data_writer_write_hudi passed")
+    # Verify no nulls
+    null_count = cleaned_df.filter(cleaned_df.name.isNull()).count()
+    assert null_count == 0
+
+    # Verify no 'Null' strings
+    null_string_count = cleaned_df.filter(cleaned_df.emailid == 'Null').count()
+    assert null_string_count == 0
 
 
-def test_complete_etl_pipeline():
-    """Test complete ETL pipeline with mocked I/O"""
-    from main.job import (
-        normalize_columns, remove_nulls, remove_duplicates,
-        add_scd_columns, DataReader, DataWriter
-    )
+def test_ingest_customer_data():
+    """Test customer data ingestion with mocked read"""
+    from main.job import ingest_customer_data
 
     # Create mock customer data
     customer_data = [
-        ('1', 'John Doe', 'john@email.com', 'East'),
-        ('2', 'Jane Smith', 'jane@email.com', 'West'),
-        ('2', 'Jane Smith', 'jane@email.com', 'West'),  # Duplicate
-        ('3', 'Bob Jones', None, 'North'),  # NULL email
-        ('4', 'Alice Brown', 'alice@email.com', 'Null')  # 'Null' region
+        ('1', 'John Doe', 'john@example.com', 'North'),
+        ('2', 'Jane Smith', 'jane@example.com', 'South'),
+        ('3', 'Bob Johnson', 'bob@example.com', 'East')
     ]
-    customer_df = spark.createDataFrame(
-        customer_data,
-        ['CustId', 'Name', 'EmailId', 'Region']
-    )
+    customer_schema = StructType([
+        StructField('CustId', StringType(), True),
+        StructField('Name', StringType(), True),
+        StructField('EmailId', StringType(), True),
+        StructField('Region', StringType(), True)
+    ])
+    mock_customer_df = spark.createDataFrame(customer_data, customer_schema)
+
+    params = {
+        'inputs_customer_source_path': 's3://adif-sdlc/sdlc_wizard/customerdata/',
+        'csv_header': True,
+        'csv_infer_schema': True,
+        'csv_delimiter': ','
+    }
+
+    # Mock the DataReader.read_csv method
+    with patch('main.job.DataReader.read_csv', return_value=mock_customer_df):
+        customer_df = ingest_customer_data(spark, params)
+
+        assert customer_df is not None
+        assert customer_df.count() == 3
+        assert 'custid' in customer_df.columns
+        assert 'name' in customer_df.columns
+
+
+def test_ingest_order_data():
+    """Test order data ingestion with mocked read"""
+    from main.job import ingest_order_data
 
     # Create mock order data
     order_data = [
-        ('101', 'Widget', 10.50, 2, '2024-01-01', '1'),
-        ('102', 'Gadget', 25.00, 1, '2024-01-02', '2'),
-        ('102', 'Gadget', 25.00, 1, '2024-01-02', '2'),  # Duplicate
-        ('103', 'Tool', 15.75, None, '2024-01-03', '1'),  # NULL qty
+        ('101', 'Laptop', 1200.00, 1, '2024-01-15', '1'),
+        ('102', 'Mouse', 25.00, 2, '2024-01-16', '1'),
+        ('103', 'Keyboard', 75.00, 1, '2024-01-17', '2')
     ]
-    order_df = spark.createDataFrame(
-        order_data,
-        ['OrderId', 'ItemName', 'PricePerUnit', 'Qty', 'Date', 'CustId']
+    order_schema = StructType([
+        StructField('OrderId', StringType(), True),
+        StructField('ItemName', StringType(), True),
+        StructField('PricePerUnit', DoubleType(), True),
+        StructField('Qty', IntegerType(), True),
+        StructField('Date', StringType(), True),
+        StructField('CustId', StringType(), True)
+    ])
+    mock_order_df = spark.createDataFrame(order_data, order_schema)
+
+    params = {
+        'inputs_order_source_path': 's3://adif-sdlc/sdlc_wizard/orderdata/',
+        'csv_header': True,
+        'csv_infer_schema': True,
+        'csv_delimiter': ','
+    }
+
+    # Mock the DataReader.read_csv method
+    with patch('main.job.DataReader.read_csv', return_value=mock_order_df):
+        order_df = ingest_order_data(spark, params)
+
+        assert order_df is not None
+        assert order_df.count() == 3
+        assert 'orderid' in order_df.columns
+        assert 'itemname' in order_df.columns
+        assert 'priceperunit' in order_df.columns
+
+
+def test_clean_data():
+    """Test data cleaning function"""
+    from main.job import clean_data
+
+    # Create test data
+    customer_data = [
+        ('1', 'John', 'john@example.com', 'North'),
+        ('2', 'Jane', 'Null', 'South'),
+        ('3', 'Bob', 'bob@example.com', 'East')
+    ]
+    customer_schema = StructType([
+        StructField('custid', StringType(), True),
+        StructField('name', StringType(), True),
+        StructField('emailid', StringType(), True),
+        StructField('region', StringType(), True)
+    ])
+    customer_df = spark.createDataFrame(customer_data, customer_schema)
+
+    order_data = [
+        ('101', 'Laptop', 1200.00, 1, '2024-01-15', '1'),
+        ('102', 'Mouse', 25.00, 2, '2024-01-16', '1')
+    ]
+    order_schema = StructType([
+        StructField('orderid', StringType(), True),
+        StructField('itemname', StringType(), True),
+        StructField('priceperunit', DoubleType(), True),
+        StructField('qty', IntegerType(), True),
+        StructField('date', StringType(), True),
+        StructField('custid', StringType(), True)
+    ])
+    order_df = spark.createDataFrame(order_data, order_schema)
+
+    params = {
+        'dq_remove_nulls': True,
+        'dq_remove_null_strings': True,
+        'dq_remove_duplicates': True
+    }
+
+    # Clean data
+    cleaned_customer_df, cleaned_order_df = clean_data(customer_df, order_df, params)
+
+    assert cleaned_customer_df.count() == 2  # Removed 'Null' string
+    assert cleaned_order_df.count() == 2
+
+
+def test_register_catalog_tables():
+    """Test catalog table registration with mocked write"""
+    from main.job import register_catalog_tables
+
+    # Create test data
+    customer_data = [('1', 'John', 'john@example.com', 'North')]
+    customer_schema = StructType([
+        StructField('custid', StringType(), True),
+        StructField('name', StringType(), True),
+        StructField('emailid', StringType(), True),
+        StructField('region', StringType(), True)
+    ])
+    customer_df = spark.createDataFrame(customer_data, customer_schema)
+
+    order_data = [('101', 'Laptop', 1200.00, 1, '2024-01-15', '1')]
+    order_schema = StructType([
+        StructField('orderid', StringType(), True),
+        StructField('itemname', StringType(), True),
+        StructField('priceperunit', DoubleType(), True),
+        StructField('qty', IntegerType(), True),
+        StructField('date', StringType(), True),
+        StructField('custid', StringType(), True)
+    ])
+    order_df = spark.createDataFrame(order_data, order_schema)
+
+    params = {
+        'catalog_database_name': 'gen_ai_poc_databrickscoe',
+        'catalog_customer_table_name': 'customer',
+        'catalog_order_table_name': 'order',
+        'outputs_customer_catalog_path': 's3://adif-sdlc/catalog/sdlc_wizard/customer/',
+        'outputs_order_catalog_path': 's3://adif-sdlc/catalog/sdlc_wizard/order/',
+        'write_mode': 'overwrite'
+    }
+
+    # Mock the DataWriter methods
+    with patch('main.job.DataWriter._write_parquet') as mock_write:
+        register_catalog_tables(customer_df, order_df, params)
+
+        # Verify write was called twice (customer and order)
+        assert mock_write.call_count == 2
+
+
+def test_implement_scd_type2():
+    """Test SCD Type 2 implementation with mocked Hudi write"""
+    from main.job import implement_scd_type2
+
+    # Create test data
+    order_data = [('101', 'Laptop', 1200.00, 1, '2024-01-15', '1')]
+    order_schema = StructType([
+        StructField('orderid', StringType(), True),
+        StructField('itemname', StringType(), True),
+        StructField('priceperunit', DoubleType(), True),
+        StructField('qty', IntegerType(), True),
+        StructField('date', StringType(), True),
+        StructField('custid', StringType(), True)
+    ])
+    order_df = spark.createDataFrame(order_data, order_schema)
+
+    customer_data = [('1', 'John', 'john@example.com', 'North')]
+    customer_schema = StructType([
+        StructField('custid', StringType(), True),
+        StructField('name', StringType(), True),
+        StructField('emailid', StringType(), True),
+        StructField('region', StringType(), True)
+    ])
+    customer_df = spark.createDataFrame(customer_data, customer_schema)
+
+    params = {
+        'scd_enable': True,
+        'scd_active_column': 'IsActive',
+        'scd_start_date_column': 'StartDate',
+        'scd_end_date_column': 'EndDate',
+        'scd_operation_timestamp_column': 'OpTs',
+        'hudi_table_name': 'ordersummary',
+        'hudi_record_key': 'orderid',
+        'hudi_precombine_field': 'OpTs',
+        'hudi_partition_path': 'date',
+        'hudi_operation': 'upsert',
+        'hudi_table_type': 'COPY_ON_WRITE',
+        'catalog_database_name': 'gen_ai_poc_databrickscoe',
+        'catalog_ordersummary_table_name': 'ordersummary',
+        'outputs_ordersummary_hudi_path': 's3://adif-sdlc/curated/sdlc_wizard/ordersummary/'
+    }
+
+    # Mock the DataWriter._write_hudi method
+    with patch('main.job.DataWriter._write_hudi') as mock_write:
+        implement_scd_type2(order_df, customer_df, params)
+
+        # Verify Hudi write was called
+        assert mock_write.call_count == 1
+
+
+def test_calculate_customer_aggregate_spend():
+    """Test customer aggregate spend calculation with mocked write"""
+    from main.job import calculate_customer_aggregate_spend
+
+    # Create test data
+    order_data = [
+        ('101', 'Laptop', 1200.00, 1, '2024-01-15', '1'),
+        ('102', 'Mouse', 25.00, 2, '2024-01-16', '1'),
+        ('103', 'Keyboard', 75.00, 1, '2024-01-17', '2')
+    ]
+    order_schema = StructType([
+        StructField('orderid', StringType(), True),
+        StructField('itemname', StringType(), True),
+        StructField('priceperunit', DoubleType(), True),
+        StructField('qty', IntegerType(), True),
+        StructField('date', StringType(), True),
+        StructField('custid', StringType(), True)
+    ])
+    order_df = spark.createDataFrame(order_data, order_schema)
+
+    customer_data = [
+        ('1', 'John', 'john@example.com', 'North'),
+        ('2', 'Jane', 'jane@example.com', 'South')
+    ]
+    customer_schema = StructType([
+        StructField('custid', StringType(), True),
+        StructField('name', StringType(), True),
+        StructField('emailid', StringType(), True),
+        StructField('region', StringType(), True)
+    ])
+    customer_df = spark.createDataFrame(customer_data, customer_schema)
+
+    params = {
+        'outputs_customeraggregatespend_path': 's3://adif-sdlc/analytics/customeraggregatespend/',
+        'write_mode': 'overwrite'
+    }
+
+    # Mock the DataWriter._write_parquet method
+    with patch('main.job.DataWriter._write_parquet') as mock_write:
+        calculate_customer_aggregate_spend(order_df, customer_df, params)
+
+        # Verify write was called
+        assert mock_write.call_count == 1
+
+
+def test_data_reader_class():
+    """Test DataReader helper class"""
+    from main.job import DataReader
+
+    reader = DataReader(spark)
+
+    # Create mock data
+    mock_data = [('1', 'John', 'john@example.com', 'North')]
+    mock_schema = StructType([
+        StructField('custid', StringType(), True),
+        StructField('name', StringType(), True),
+        StructField('emailid', StringType(), True),
+        StructField('region', StringType(), True)
+    ])
+    mock_df = spark.createDataFrame(mock_data, mock_schema)
+
+    # Mock spark.read.csv
+    with patch.object(spark.read, 'csv', return_value=mock_df):
+        result_df = reader.read_csv('s3://test/path', header=True, infer_schema=True)
+
+        assert result_df is not None
+        assert result_df.count() == 1
+
+
+def test_data_writer_class():
+    """Test DataWriter helper class"""
+    from main.job import DataWriter
+
+    writer = DataWriter(spark)
+
+    # Create test data
+    test_data = [('1', 'John', 'john@example.com', 'North')]
+    test_schema = StructType([
+        StructField('custid', StringType(), True),
+        StructField('name', StringType(), True),
+        StructField('emailid', StringType(), True),
+        StructField('region', StringType(), True)
+    ])
+    test_df = spark.createDataFrame(test_data, test_schema)
+
+    # Test parquet write
+    with patch.object(writer, '_write_parquet') as mock_parquet:
+        writer.write_dataframe(test_df, 's3://test/path', format_type='parquet')
+        assert mock_parquet.call_count == 1
+
+    # Test CSV write
+    with patch.object(writer, '_write_csv') as mock_csv:
+        writer.write_dataframe(test_df, 's3://test/path', format_type='csv')
+        assert mock_csv.call_count == 1
+
+    # Test Hudi write
+    with patch.object(writer, '_write_hudi') as mock_hudi:
+        hudi_options = {'hoodie.table.name': 'test'}
+        writer.write_dataframe(test_df, 's3://test/path', format_type='hudi', hudi_options=hudi_options)
+        assert mock_hudi.call_count == 1
+
+
+def test_end_to_end_workflow():
+    """Test complete end-to-end workflow with all mocked I/O"""
+    from main.job import (
+        ingest_customer_data,
+        ingest_order_data,
+        clean_data,
+        register_catalog_tables,
+        implement_scd_type2,
+        calculate_customer_aggregate_spend
     )
 
-    # Process customer data
-    customer_normalized = normalize_columns(customer_df)
-    customer_clean = remove_nulls(customer_normalized)
-    customer_deduped = remove_duplicates(customer_clean)
+    # Create mock data
+    customer_data = [
+        ('1', 'John Doe', 'john@example.com', 'North'),
+        ('2', 'Jane Smith', 'jane@example.com', 'South')
+    ]
+    customer_schema = StructType([
+        StructField('CustId', StringType(), True),
+        StructField('Name', StringType(), True),
+        StructField('EmailId', StringType(), True),
+        StructField('Region', StringType(), True)
+    ])
+    mock_customer_df = spark.createDataFrame(customer_data, customer_schema)
 
-    # Process order data
-    order_normalized = normalize_columns(order_df)
-    order_clean = remove_nulls(order_normalized)
-    order_deduped = remove_duplicates(order_clean)
+    order_data = [
+        ('101', 'Laptop', 1200.00, 1, '2024-01-15', '1'),
+        ('102', 'Mouse', 25.00, 2, '2024-01-16', '1'),
+        ('103', 'Keyboard', 75.00, 1, '2024-01-17', '2')
+    ]
+    order_schema = StructType([
+        StructField('OrderId', StringType(), True),
+        StructField('ItemName', StringType(), True),
+        StructField('PricePerUnit', DoubleType(), True),
+        StructField('Qty', IntegerType(), True),
+        StructField('Date', StringType(), True),
+        StructField('CustId', StringType(), True)
+    ])
+    mock_order_df = spark.createDataFrame(order_data, order_schema)
 
-    # Verify cleaning results
-    assert customer_deduped.count() == 1  # Only custid=1 is valid
-    assert order_deduped.count() == 1  # Only orderid=101 is valid
+    params = {
+        'inputs_customer_source_path': 's3://adif-sdlc/sdlc_wizard/customerdata/',
+        'inputs_order_source_path': 's3://adif-sdlc/sdlc_wizard/orderdata/',
+        'outputs_customer_catalog_path': 's3://adif-sdlc/catalog/sdlc_wizard/customer/',
+        'outputs_order_catalog_path': 's3://adif-sdlc/catalog/sdlc_wizard/order/',
+        'outputs_ordersummary_hudi_path': 's3://adif-sdlc/curated/sdlc_wizard/ordersummary/',
+        'outputs_customeraggregatespend_path': 's3://adif-sdlc/analytics/customeraggregatespend/',
+        'catalog_database_name': 'gen_ai_poc_databrickscoe',
+        'catalog_customer_table_name': 'customer',
+        'catalog_order_table_name': 'order',
+        'catalog_ordersummary_table_name': 'ordersummary',
+        'dq_remove_nulls': True,
+        'dq_remove_null_strings': True,
+        'dq_remove_duplicates': True,
+        'scd_enable': True,
+        'scd_active_column': 'IsActive',
+        'scd_start_date_column': 'StartDate',
+        'scd_end_date_column': 'EndDate',
+        'scd_operation_timestamp_column': 'OpTs',
+        'hudi_table_name': 'ordersummary',
+        'hudi_record_key': 'orderid',
+        'hudi_precombine_field': 'OpTs',
+        'hudi_partition_path': 'date',
+        'hudi_operation': 'upsert',
+        'hudi_table_type': 'COPY_ON_WRITE',
+        'csv_header': True,
+        'csv_infer_schema': True,
+        'csv_delimiter': ',',
+        'write_mode': 'overwrite'
+    }
 
-    # Join datasets
-    joined_df = order_deduped.join(customer_deduped, on='custid', how='inner')
-    assert joined_df.count() == 1
+    # Mock all I/O operations
+    with patch('main.job.DataReader.read_csv') as mock_read, \
+         patch('main.job.DataWriter._write_parquet') as mock_write_parquet, \
+         patch('main.job.DataWriter._write_hudi') as mock_write_hudi:
 
-    # Add SCD columns
-    final_df = add_scd_columns(joined_df)
+        # Configure mocks
+        mock_read.side_effect = [mock_customer_df, mock_order_df]
 
-    # Verify final structure
-    assert 'IsActive' in final_df.columns
-    assert 'StartDate' in final_df.columns
-    assert 'EndDate' in final_df.columns
-    assert 'OpTs' in final_df.columns
+        # Execute workflow
+        customer_df = ingest_customer_data(spark, params)
+        order_df = ingest_order_data(spark, params)
 
-    result = final_df.collect()[0]
-    assert result['custid'] == '1'
-    assert result['orderid'] == '101'
-    assert result['IsActive'] == True
+        assert customer_df.count() == 2
+        assert order_df.count() == 3
 
-    print("✓ test_complete_etl_pipeline passed")
+        cleaned_customer_df, cleaned_order_df = clean_data(customer_df, order_df, params)
 
+        assert cleaned_customer_df.count() == 2
+        assert cleaned_order_df.count() == 3
 
-def test_register_catalog_table():
-    """Test catalog table registration"""
-    from main.job import register_catalog_table
+        register_catalog_tables(cleaned_customer_df, cleaned_order_df, params)
+        implement_scd_type2(cleaned_order_df, cleaned_customer_df, params)
+        calculate_customer_aggregate_spend(cleaned_order_df, cleaned_customer_df, params)
 
-    # Create test DataFrame
-    data = [('1', 'John', 'john@email.com', 'East')]
-    df = spark.createDataFrame(data, ['custid', 'name', 'emailid', 'region'])
-
-    # Mock the write operation
-    with patch.object(df.write, 'saveAsTable'):
-        with patch.object(spark, 'sql'):
-            register_catalog_table(
-                spark,
-                df,
-                'gen_ai_poc_databrickscoe',
-                'customer',
-                's3://adif-sdlc/catalog/sdlc_wizard/customer/'
-            )
-
-    print("✓ test_register_catalog_table passed")
-
-
-def run_all_tests():
-    """Run all test functions"""
-    print("\n" + "="*60)
-    print("Running AWS Glue PySpark ETL Job Tests")
-    print("="*60 + "\n")
-
-    test_get_job_parameters()
-    test_normalize_columns()
-    test_remove_nulls()
-    test_remove_duplicates()
-    test_add_scd_columns()
-    test_validate_s3_access()
-    test_data_reader_read_csv()
-    test_data_writer_write_parquet()
-    test_data_writer_write_hudi()
-    test_complete_etl_pipeline()
-    test_register_catalog_table()
-
-    print("\n" + "="*60)
-    print("All tests passed successfully! ✓")
-    print("="*60 + "\n")
+        # Verify all writes were called
+        assert mock_write_parquet.call_count >= 2  # catalog + aggregate
+        assert mock_write_hudi.call_count == 1  # SCD Type 2
 
 
 if __name__ == '__main__':
-    run_all_tests()
+    print("Running tests...")
+
+    test_get_job_parameters()
+    print("✓ test_get_job_parameters passed")
+
+    test_validate_s3_path()
+    print("✓ test_validate_s3_path passed")
+
+    test_normalize_columns()
+    print("✓ test_normalize_columns passed")
+
+    test_apply_data_quality()
+    print("✓ test_apply_data_quality passed")
+
+    test_ingest_customer_data()
+    print("✓ test_ingest_customer_data passed")
+
+    test_ingest_order_data()
+    print("✓ test_ingest_order_data passed")
+
+    test_clean_data()
+    print("✓ test_clean_data passed")
+
+    test_register_catalog_tables()
+    print("✓ test_register_catalog_tables passed")
+
+    test_implement_scd_type2()
+    print("✓ test_implement_scd_type2 passed")
+
+    test_calculate_customer_aggregate_spend()
+    print("✓ test_calculate_customer_aggregate_spend passed")
+
+    test_data_reader_class()
+    print("✓ test_data_reader_class passed")
+
+    test_data_writer_class()
+    print("✓ test_data_writer_class passed")
+
+    test_end_to_end_workflow()
+    print("✓ test_end_to_end_workflow passed")
+
+    print("\n" + "="*50)
+    print("All tests passed successfully!")
+    print("="*50)
