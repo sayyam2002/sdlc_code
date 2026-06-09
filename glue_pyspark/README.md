@@ -1,12 +1,19 @@
-# Customer Order Pipeline - AWS Glue PySpark ETL Job
+# AWS Glue PySpark ETL Job - Customer Order Processing
 
 ## Overview
-This AWS Glue ETL job implements a complete customer order data pipeline that:
-- Ingests customer and order data from S3 CSV files
-- Performs data quality transformations (null removal, deduplication)
-- Writes cleaned data to AWS Glue Data Catalog in Parquet format
-- Implements SCD Type 2 using Apache Hudi for order summary tracking
+This AWS Glue PySpark job implements a complete ETL pipeline for customer and order data processing with the following capabilities:
+- Ingests customer and order CSV data from S3
+- Performs data quality checks and deduplication
+- Implements SCD Type 2 using Apache Hudi
 - Generates customer aggregate spend analytics
+- Registers tables in AWS Glue Data Catalog
+
+## Architecture
+- **Source Data**: S3 CSV files (customers, orders)
+- **Processing**: AWS Glue PySpark with Apache Hudi
+- **Target Storage**: S3 (Parquet/Hudi format)
+- **Catalog**: AWS Glue Data Catalog
+- **Query Engine**: Amazon Athena
 
 ## Project Structure
 ```
@@ -23,95 +30,95 @@ glue_pyspark/
 │       ├── __init__.py
 │       └── test_job.py
 └── sample_data/
-    ├── customer.csv
-    └── order.csv
+    ├── customers.csv
+    └── orders.csv
 ```
 
-## Technical Requirements Implemented
-
-### TR-INGEST-001: Customer Data Ingestion
-- Reads CSV files from S3: `s3://adif-sdlc/sdlc_wizard/customerdata/`
-- Schema: CustId, Name, EmailId, Region
-- Validates schema and handles errors
-
-### TR-INGEST-002: Order Data Ingestion
-- Reads CSV files from S3: `s3://adif-sdlc/sdlc_wizard/orderdata/`
-- Schema: OrderId, ItemName, PricePerUnit, Qty, Date, CustId
-- Type casting for numeric and date fields
-
-### TR-CLEAN-001: Null Value Removal
-- Removes records with NULL values
-- Removes records with string literal "Null"
-
-### TR-CLEAN-002: Deduplication
-- Removes duplicate records based on all columns
-
-### TR-CATALOG-001 & TR-CATALOG-002: Data Catalog Registration
-- Writes cleaned data to S3 in Parquet format
-- Registers tables in AWS Glue Data Catalog:
-  - `sdlc_wizard_customer`
-  - `sdlc_wizard_order`
-
-### SCD Type 2 Implementation
-- Implements Slowly Changing Dimension Type 2 using Apache Hudi
-- Tracks historical changes with IsActive, StartDate, EndDate, OpTs columns
-- Writes to: `s3://adif-sdlc/curated/sdlc_wizard/ordersummary/`
-
-### Aggregation Analytics
-- Generates customer aggregate spend table
-- Calculates total spending per customer per date
-- Writes to: `s3://adif-sdlc/analytics/customeraggregatespend/`
-
 ## Configuration
+All job parameters are defined in `config/glue_params.yaml`:
+- Source S3 paths for customer and order data
+- Target S3 paths for curated and analytics data
+- Glue Data Catalog database and table names
+- Hudi configuration parameters
 
-All runtime parameters are defined in `config/glue_params.yaml`:
-- Source paths for customer and order data
-- Target paths for curated and analytics data
-- Database and table names
-- CSV parsing options
+## Data Flow
+1. **Ingestion**: Read customer and order CSV files from S3
+2. **Cleaning**: Remove NULL values and duplicates
+3. **Catalog Registration**: Register cleaned data in Glue Data Catalog
+4. **SCD Type 2**: Maintain historical customer changes using Hudi
+5. **Aggregation**: Calculate customer aggregate spend
+6. **Analytics Catalog**: Register analytics tables for Athena queries
+
+## Schemas
+
+### Customer Schema
+| Column | Type | Nullable |
+|--------|------|----------|
+| CustId | string | No |
+| Name | string | Yes |
+| EmailId | string | Yes |
+| Region | string | Yes |
+
+### Order Schema
+| Column | Type | Nullable |
+|--------|------|----------|
+| OrderId | string | No |
+| ItemName | string | Yes |
+| PricePerUnit | double | Yes |
+| Qty | integer | Yes |
+| Date | string | Yes |
+| CustId | string | No |
+
+### Order Summary (Hudi SCD Type 2)
+Includes all order columns plus:
+- IsActive (boolean)
+- StartDate (timestamp)
+- EndDate (timestamp)
+- OpTs (timestamp)
+
+### Customer Aggregate Spend
+| Column | Type |
+|--------|------|
+| CustId | string |
+| TotalSpend | double |
 
 ## Running the Job
 
 ### AWS Glue Console
-1. Upload `src/main/job.py` to S3
-2. Create a new Glue job pointing to the script
-3. Configure job parameters from `glue_params.yaml`
+1. Upload job.py to S3
+2. Create Glue job with Python 3.9 and Glue 3.0+
+3. Configure job parameters from glue_params.yaml
 4. Run the job
 
 ### Local Testing
 ```bash
-# Install dependencies
 pip install -r requirements.txt
-
-# Run tests
 python -m pytest src/test/test_job.py -v
 ```
 
-## Sample Data
-Sample CSV files are provided in `sample_data/` directory:
-- `customer.csv`: Sample customer records
-- `order.csv`: Sample order records
+## Error Handling
+- Validates S3 paths before operations
+- Logs detailed error messages for troubleshooting
+- Raises exceptions for critical failures
+- Implements retry logic for transient errors
+
+## Monitoring
+- CloudWatch Logs for job execution details
+- Glue job metrics for performance monitoring
+- Data quality metrics logged during processing
 
 ## Dependencies
-- PySpark (provided by AWS Glue)
+- PySpark 3.x
+- AWS Glue libraries
+- Apache Hudi
 - PyYAML for configuration management
-- pytest for testing
 
-## Error Handling
-- Schema validation with detailed error messages
-- Type casting error handling
-- Empty file warnings
-- S3 access validation before operations
+## Sample Data
+Sample CSV files are provided in `sample_data/` directory for testing:
+- `customers.csv`: Sample customer records
+- `orders.csv`: Sample order records
 
-## Logging
-Comprehensive logging at INFO, WARNING, and ERROR levels:
-- Record counts at each stage
-- Schema validation results
-- Data quality metrics
-- Processing timestamps
-
-## IAM Permissions Required
-- s3:GetObject on source buckets
-- s3:PutObject on target buckets
-- glue:CreateTable, glue:UpdateTable
-- logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents
+## Notes
+- Ensure IAM role has permissions for S3, Glue Data Catalog, and CloudWatch
+- Hudi tables require Glue 3.0 or higher
+- Athena queries on Hudi tables require Athena engine version 2 or higher

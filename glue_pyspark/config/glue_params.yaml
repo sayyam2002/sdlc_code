@@ -1,35 +1,40 @@
 # AWS Glue Job Parameters Configuration
 
-# Input Sources
-inputs_source_customer_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
-inputs_source_order_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
-inputs_source_format: "csv"
-inputs_csv_delimiter: ","
-inputs_csv_header: "true"
+# Source paths
+customer_source_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
+order_source_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
 
-# Output Targets - Curated Layer
-outputs_target_customer_path: "s3://adif-sdlc/curated/sdlc_wizard/customer/"
-outputs_target_order_path: "s3://adif-sdlc/curated/sdlc_wizard/order/"
-outputs_target_ordersummary_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
+# Target paths
+ordersummary_target_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
+customeraggregatespend_target_path: "s3://adif-sdlc/analytics/customeraggregatespend/"
 
-# Output Targets - Analytics Layer
-outputs_target_analytics_path: "s3://adif-sdlc/analytics/customeraggregatespend/"
+# CSV format parameters
+csv_delimiter: ","
+csv_header: "true"
+csv_quote: "\""
+csv_escape: "\""
 
-# Glue Data Catalog Configuration
-catalog_database_name: "sdlc_wizard_db"
-catalog_table_customer: "sdlc_wizard_customer"
-catalog_table_order: "sdlc_wizard_order"
-catalog_table_ordersummary: "sdlc_wizard_ordersummary"
-catalog_table_analytics: "customeraggregatespend"
+# Glue Data Catalog
+glue_database: "gen_ai_poc_databrickscoe"
+customer_table_name: "customer_cleaned"
+order_table_name: "order_cleaned"
+ordersummary_table_name: "ordersummary"
+customeraggregatespend_table_name: "customeraggregatespend"
 
-# Hudi Configuration for SCD Type 2
+# Hudi configuration
 hudi_table_name: "ordersummary"
 hudi_record_key: "OrderId"
-hudi_precombine_field: "OpTs"
-hudi_partition_field: "Date"
+hudi_precombine_key: "OpTs"
+hudi_partition_path: ""
+hudi_table_type: "COPY_ON_WRITE"
 hudi_operation: "upsert"
 
-# Processing Options
-enable_job_bookmark: "true"
-enable_data_quality: "true"
-enable_scd_type2: "true"
+# Processing parameters
+enable_deduplication: true
+enable_null_removal: true
+enable_scd_type2: true
+enable_aggregation: true
+enable_catalog_registration: true
+
+# Logging
+log_level: "INFO"
