@@ -1,40 +1,37 @@
 # AWS Glue Job Parameters Configuration
 
-# Source paths
-customer_source_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
-order_source_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
+# Input Configuration
+inputs_customer_source_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
+inputs_customer_source_format: "csv"
+inputs_order_source_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
+inputs_order_source_format: "csv"
 
-# Target paths
-ordersummary_target_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
-customeraggregatespend_target_path: "s3://adif-sdlc/analytics/customeraggregatespend/"
+# Output Configuration
+outputs_customer_target_path: "s3://adif-sdlc/catalog/sdlc_wizard/customer/"
+outputs_customer_target_format: "parquet"
+outputs_order_target_path: "s3://adif-sdlc/catalog/sdlc_wizard/order/"
+outputs_order_target_format: "parquet"
+outputs_ordersummary_target_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
+outputs_ordersummary_target_format: "hudi"
 
-# CSV format parameters
-csv_delimiter: ","
-csv_header: "true"
-csv_quote: "\""
-csv_escape: "\""
+# Glue Catalog Configuration
+catalog_database_name: "gen_ai_poc_databrickscoe"
+catalog_customer_table_name: "customer"
+catalog_order_table_name: "order"
+catalog_ordersummary_table_name: "ordersummary"
 
-# Glue Data Catalog
-glue_database: "gen_ai_poc_databrickscoe"
-customer_table_name: "customer_cleaned"
-order_table_name: "order_cleaned"
-ordersummary_table_name: "ordersummary"
-customeraggregatespend_table_name: "customeraggregatespend"
-
-# Hudi configuration
+# Hudi Configuration
 hudi_table_name: "ordersummary"
 hudi_record_key: "OrderId"
 hudi_precombine_key: "OpTs"
-hudi_partition_path: ""
+hudi_partition_path: "Region"
 hudi_table_type: "COPY_ON_WRITE"
 hudi_operation: "upsert"
 
-# Processing parameters
-enable_deduplication: true
-enable_null_removal: true
-enable_scd_type2: true
-enable_aggregation: true
-enable_catalog_registration: true
+# Processing Configuration
+csv_header: "true"
+csv_delimiter: ","
+csv_infer_schema: "true"
 
-# Logging
-log_level: "INFO"
+# Temp Path
+temp_path: "s3://adif-sdlc/temp/"
