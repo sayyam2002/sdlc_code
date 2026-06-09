@@ -1,6 +1,12 @@
 CustId,Name,EmailId,Region
-1,John Doe,john.doe@example.com,North
-2,Jane Smith,jane.smith@example.com,South
-3,Bob Johnson,bob.johnson@example.com,East
-4,Alice Williams,alice.williams@example.com,West
-5,Charlie Brown,charlie.brown@example.com,North
+C001,John Doe,john.doe@example.com,North
+C002,Jane Smith,jane.smith@example.com,South
+C003,Bob Johnson,bob.johnson@example.com,East
+C004,Alice Brown,alice.brown@example.com,West
+C005,Charlie Wilson,charlie.wilson@example.com,North
+C006,Diana Prince,diana.prince@example.com,South
+C007,Null,evan.davis@example.com,East
+C008,Frank Miller,Null,West
+C009,Grace Lee,grace.lee@example.com,Null
+C010,Henry Ford,henry.ford@example.com,North
+C001,John Doe,john.doe@example.com,North

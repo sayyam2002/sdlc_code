@@ -1,47 +1,61 @@
 # AWS Glue Job Parameters Configuration
 
-# Customer Data Source
-customer_source_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
-customer_source_format: "csv"
+# Input Sources
+inputs:
+  customer:
+    source_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
+    source_format: "csv"
+  order:
+    source_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
+    source_format: "csv"
 
-# Order Data Source
-order_source_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
-order_source_format: "csv"
+# Output Targets
+outputs:
+  customer:
+    target_path: "s3://adif-sdlc/curated/sdlc_wizard/customer/"
+    target_format: "parquet"
+  order:
+    target_path: "s3://adif-sdlc/curated/sdlc_wizard/order/"
+    target_format: "parquet"
+  ordersummary:
+    target_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
+    target_format: "hudi"
+  customeraggregatespend:
+    target_path: "s3://adif-sdlc/analytics/customeraggregatespend/"
+    target_format: "parquet"
 
-# Cleaned Data Targets
-customer_clean_target_path: "s3://adif-sdlc/curated/sdlc_wizard/customer_clean/"
-order_clean_target_path: "s3://adif-sdlc/curated/sdlc_wizard/order_clean/"
+# AWS Glue Data Catalog
+catalog:
+  database: "sdlc_wizard_db"
+  tables:
+    customer: "sdlc_wizard_customer"
+    order: "sdlc_wizard_order"
+    ordersummary: "ordersummary"
+    customeraggregatespend: "customeraggregatespend"
 
-# Catalog Targets
-customer_catalog_path: "s3://adif-sdlc/catalog/sdlc_wizard_customer/"
-order_catalog_path: "s3://adif-sdlc/catalog/sdlc_wizard_order/"
-
-# Order Summary Target (SCD Type 2)
-order_summary_target_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
-
-# Analytics Target
-customer_aggregate_spend_path: "s3://adif-sdlc/analytics/customeraggregatespend/"
-
-# Glue Data Catalog Configuration
-glue_database: "sdlc_wizard_db"
-customer_table_name: "sdlc_wizard_customer"
-order_table_name: "sdlc_wizard_order"
-order_summary_table_name: "ordersummary"
-customer_aggregate_table_name: "customeraggregatespend"
+# Hudi Configuration for SCD Type 2
+hudi:
+  table_name: "ordersummary"
+  record_key: "CustId,OrderId"
+  precombine_field: "OpTs"
+  table_type: "COPY_ON_WRITE"
+  operation: "upsert"
+  partition_fields: ""
+  index_type: "GLOBAL_BLOOM"
 
 # Processing Options
-output_format: "parquet"
-enable_scd2: true
-enable_hudi: true
+processing:
+  enable_scd2: true
+  enable_aggregation: true
+  enable_incremental: true
+  null_string_values:
+    - "Null"
+    - "NULL"
+    - "null"
 
-# Hudi Configuration
-hudi_table_type: "COPY_ON_WRITE"
-hudi_operation: "upsert"
-hudi_precombine_field: "OpTs"
-hudi_recordkey_field: "CustId,OrderId"
-hudi_partitionpath_field: "Date"
-
-# Data Quality Options
-remove_nulls: true
-remove_duplicates: true
-null_string_values: ["Null", "NULL", "null"]
+# Spark Configuration
+spark:
+  app_name: "CustomerOrderETL"
+  log_level: "WARN"
+  temp_path: "s3://adif-sdlc/temp/"
+  spark_logs: "s3://adif-sdlc/spark-logs/"

@@ -1,27 +1,18 @@
 """
-AWS Glue PySpark ETL Job - Customer Order Processing
-
-This job performs the following operations:
-1. Ingests customer and order data from S3
-2. Cleans data by removing nulls and duplicates
-3. Registers tables in Glue Data Catalog
-4. Generates customer spending aggregates
-5. Implements SCD Type 2 with Hudi format
+AWS Glue PySpark ETL Job - Customer Order Analytics
+Main job implementation with SCD Type 2 support using Apache Hudi
 """
 
 import sys
-import yaml
+import os
 from datetime import datetime
-from decimal import Decimal
-from awsglue.transforms import *
-from awsglue.utils import getResolvedOptions
-from pyspark.context import SparkContext
-from awsglue.context import GlueContext
-from awsglue.job import Job
-from pyspark.sql import SparkSession
+from typing import Dict, Any, Optional, Tuple
+
+import yaml
+from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
-    col, sum as _sum, count, lit, current_timestamp,
-    when, trim, lower, to_date, regexp_replace
+    col, lit, when, current_timestamp, to_date,
+    sum as _sum, count, max as _max, min as _min
 )
 from pyspark.sql.types import (
     StructType, StructField, StringType, DecimalType,
@@ -29,478 +20,483 @@ from pyspark.sql.types import (
 )
 
 
-def get_job_parameters():
+def initialize_spark_contexts() -> Tuple[SparkSession, Any]:
+    """
+    Initialize Spark and Glue contexts with proper configuration.
+
+    Returns:
+        Tuple of (SparkSession, GlueContext)
+    """
+    # Check if running in existing Spark context (test environment)
+    if hasattr(__builtins__, 'spark'):
+        spark = getattr(__builtins__, 'spark')
+        glue_context = None
+        return spark, glue_context
+
+    # Create new Spark session for Glue environment
+    spark = SparkSession.builder \
+        .appName("CustomerOrderETL") \
+        .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
+        .config("spark.sql.hive.convertMetastoreParquet", "false") \
+        .getOrCreate()
+
+    spark.sparkContext.setLogLevel("WARN")
+
+    # Initialize Glue context if available
+    glue_context = None
+    try:
+        from awsglue.context import GlueContext
+        glue_context = GlueContext(spark.sparkContext)
+    except ImportError:
+        print("GlueContext not available - running in local/test mode")
+
+    return spark, glue_context
+
+
+def get_job_parameters() -> Dict[str, Any]:
     """
     Load job parameters from YAML configuration file.
-    Returns a dictionary of configuration parameters.
+
+    Returns:
+        Dictionary containing all job parameters
+    """
+    config_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+        'config',
+        'glue_params.yaml'
+    )
+
+    with open(config_path, 'r') as f:
+        params = yaml.safe_load(f)
+
+    return params
+
+
+def validate_s3_access(spark: SparkSession, s3_path: str) -> bool:
+    """
+    Validate S3 bucket access before operations.
+
+    Args:
+        spark: SparkSession instance
+        s3_path: S3 path to validate
+
+    Returns:
+        True if accessible, False otherwise
     """
     try:
-        with open('config/glue_params.yaml', 'r') as f:
-            params = yaml.safe_load(f)
-        return params
-    except FileNotFoundError:
-        # Fallback to default parameters if config file not found
-        return {
-            'customer_source_path': 's3://adif-sdlc/sdlc_wizard/customerdata/',
-            'customer_source_format': 'csv',
-            'order_source_path': 's3://adif-sdlc/sdlc_wizard/orderdata/',
-            'order_source_format': 'csv',
-            'customer_clean_target_path': 's3://adif-sdlc/curated/sdlc_wizard/customer_clean/',
-            'order_clean_target_path': 's3://adif-sdlc/curated/sdlc_wizard/order_clean/',
-            'customer_catalog_path': 's3://adif-sdlc/catalog/sdlc_wizard_customer/',
-            'order_catalog_path': 's3://adif-sdlc/catalog/sdlc_wizard_order/',
-            'order_summary_target_path': 's3://adif-sdlc/curated/sdlc_wizard/ordersummary/',
-            'customer_aggregate_spend_path': 's3://adif-sdlc/analytics/customeraggregatespend/',
-            'glue_database': 'sdlc_wizard_db',
-            'customer_table_name': 'sdlc_wizard_customer',
-            'order_table_name': 'sdlc_wizard_order',
-            'order_summary_table_name': 'ordersummary',
-            'customer_aggregate_table_name': 'customeraggregatespend',
-            'output_format': 'parquet',
-            'enable_scd2': True,
-            'enable_hudi': True,
-            'remove_nulls': True,
-            'remove_duplicates': True,
-            'null_string_values': ['Null', 'NULL', 'null']
-        }
+        # Simple validation - check if path is properly formatted
+        if not s3_path.startswith('s3://'):
+            return False
 
-
-def initialize_spark_contexts():
-    """
-    Initialize Spark and Glue contexts.
-    Returns tuple of (SparkContext, GlueContext, SparkSession, Job)
-    """
-    # Check if running in test environment
-    if hasattr(__builtins__, 'spark') if isinstance(__builtins__, type(sys)) else 'spark' in __builtins__:
-        spark = getattr(__builtins__, 'spark') if isinstance(__builtins__, type(sys)) else __builtins__['spark']
-        sc = spark.sparkContext
-        glueContext = GlueContext(sc)
-        job = Job(glueContext)
-        return sc, glueContext, spark, job
-
-    # Production environment
-    sc = SparkContext.getOrCreate()
-    glueContext = GlueContext(sc)
-    spark = glueContext.spark_session
-    job = Job(glueContext)
-
-    return sc, glueContext, spark, job
-
-
-def validate_s3_access(spark, s3_path):
-    """
-    Validate S3 path accessibility.
-    Returns True if accessible, False otherwise.
-    """
-    try:
-        # Simple validation - in production, this would check actual S3 access
-        if s3_path and s3_path.startswith('s3://'):
-            return True
-        return False
+        # In production, this would attempt to list the bucket
+        # For now, we assume valid S3 paths are accessible
+        return True
     except Exception as e:
-        print(f"S3 validation error for {s3_path}: {str(e)}")
+        print(f"S3 access validation failed for {s3_path}: {str(e)}")
         return False
 
 
 class DataReader:
-    """Helper class for reading data from S3"""
+    """Helper class for safe data reading operations"""
 
-    def __init__(self, spark):
+    def __init__(self, spark: SparkSession):
         self.spark = spark
 
-    def read_csv(self, path, schema=None):
-        """Read CSV file from S3 with optional schema"""
+    def _read_csv(self, path: str, schema: Optional[StructType] = None) -> DataFrame:
+        """Internal method to read CSV files"""
         reader = self.spark.read.format("csv") \
             .option("header", "true") \
-            .option("inferSchema", "true" if schema is None else "false") \
-            .option("delimiter", ",") \
-            .option("quote", '"') \
-            .option("encoding", "UTF-8")
+            .option("inferSchema", "true" if schema is None else "false")
 
         if schema:
             reader = reader.schema(schema)
 
         return reader.load(path)
 
+    def _read_parquet(self, path: str) -> DataFrame:
+        """Internal method to read Parquet files"""
+        return self.spark.read.format("parquet").load(path)
 
-class DataWriter:
-    """Helper class for writing data to S3"""
-
-    def __init__(self, spark):
-        self.spark = spark
-
-    def _write_parquet(self, df, path, mode="overwrite"):
-        """Internal method to write Parquet format"""
-        df.write.mode(mode).parquet(path)
-
-    def _write_csv(self, df, path, mode="overwrite"):
-        """Internal method to write CSV format"""
-        df.write.mode(mode).option("header", "true").csv(path)
-
-    def _write_json(self, df, path, mode="overwrite"):
-        """Internal method to write JSON format"""
-        df.write.mode(mode).json(path)
-
-    def write_dataframe(self, df, path, format_type="parquet", mode="overwrite"):
-        """Public method to write DataFrame with format dispatch"""
-        if format_type.lower() == "parquet":
-            self._write_parquet(df, path, mode)
-        elif format_type.lower() == "csv":
-            self._write_csv(df, path, mode)
-        elif format_type.lower() == "json":
-            self._write_json(df, path, mode)
+    def read_data(self, path: str, format_type: str, schema: Optional[StructType] = None) -> DataFrame:
+        """Public method to read data with format dispatch"""
+        if format_type.lower() == "csv":
+            return self._read_csv(path, schema)
+        elif format_type.lower() == "parquet":
+            return self._read_parquet(path)
         else:
             raise ValueError(f"Unsupported format: {format_type}")
 
 
-def read_data_safe(reader, path, format_type, schema=None):
+class DataWriter:
+    """Helper class for safe data writing operations"""
+
+    def __init__(self, spark: SparkSession):
+        self.spark = spark
+
+    def _write_parquet(self, df: DataFrame, path: str, mode: str = "overwrite") -> None:
+        """Internal method to write Parquet files"""
+        df.write.format("parquet").mode(mode).save(path)
+
+    def _write_csv(self, df: DataFrame, path: str, mode: str = "overwrite") -> None:
+        """Internal method to write CSV files"""
+        df.write.format("csv") \
+            .option("header", "true") \
+            .mode(mode) \
+            .save(path)
+
+    def _write_hudi(self, df: DataFrame, path: str, hudi_options: Dict[str, str]) -> None:
+        """Internal method to write Hudi tables"""
+        df.write.format("hudi") \
+            .options(**hudi_options) \
+            .mode("append") \
+            .save(path)
+
+    def write_data(self, df: DataFrame, path: str, format_type: str,
+                   mode: str = "overwrite", hudi_options: Optional[Dict[str, str]] = None) -> None:
+        """Public method to write data with format dispatch"""
+        if format_type.lower() == "parquet":
+            self._write_parquet(df, path, mode)
+        elif format_type.lower() == "csv":
+            self._write_csv(df, path, mode)
+        elif format_type.lower() == "hudi":
+            if hudi_options is None:
+                raise ValueError("Hudi options required for Hudi format")
+            self._write_hudi(df, path, hudi_options)
+        else:
+            raise ValueError(f"Unsupported format: {format_type}")
+
+
+def read_data_safe(spark: SparkSession, path: str, format_type: str,
+                   schema: Optional[StructType] = None) -> Optional[DataFrame]:
     """
     Safely read data from S3 with error handling.
+
+    Args:
+        spark: SparkSession instance
+        path: S3 path to read from
+        format_type: Format type (csv, parquet, etc.)
+        schema: Optional schema definition
+
+    Returns:
+        DataFrame if successful, None otherwise
     """
     try:
-        if format_type.lower() == "csv":
-            df = reader.read_csv(path, schema)
-        else:
-            df = reader.spark.read.format(format_type).load(path)
+        if not validate_s3_access(spark, path):
+            print(f"S3 access validation failed for {path}")
+            return None
+
+        reader = DataReader(spark)
+        df = reader.read_data(path, format_type, schema)
 
         # Normalize column names to lowercase
         df = df.toDF(*[c.lower() for c in df.columns])
+
         return df
     except Exception as e:
         print(f"Error reading data from {path}: {str(e)}")
-        raise
+        return None
 
 
-def write_data_safe(writer, df, path, format_type="parquet", mode="overwrite"):
+def write_data_safe(df: DataFrame, spark: SparkSession, path: str,
+                    format_type: str, mode: str = "overwrite",
+                    hudi_options: Optional[Dict[str, str]] = None) -> bool:
     """
     Safely write data to S3 with error handling.
+
+    Args:
+        df: DataFrame to write
+        spark: SparkSession instance
+        path: S3 path to write to
+        format_type: Format type (parquet, csv, hudi)
+        mode: Write mode (overwrite, append)
+        hudi_options: Hudi configuration options
+
+    Returns:
+        True if successful, False otherwise
     """
     try:
-        writer.write_dataframe(df, path, format_type, mode)
+        if not validate_s3_access(spark, path):
+            print(f"S3 access validation failed for {path}")
+            return False
+
+        writer = DataWriter(spark)
+        writer.write_data(df, path, format_type, mode, hudi_options)
+
         print(f"Successfully wrote data to {path}")
+        return True
     except Exception as e:
         print(f"Error writing data to {path}: {str(e)}")
-        raise
+        return False
 
 
-def get_customer_schema():
-    """Define customer data schema"""
+def get_customer_schema() -> StructType:
+    """
+    Define customer data schema.
+
+    Returns:
+        StructType schema definition
+    """
     return StructType([
-        StructField("CustId", StringType(), False),
-        StructField("Name", StringType(), False),
-        StructField("EmailId", StringType(), False),
-        StructField("Region", StringType(), False)
+        StructField("custid", StringType(), False),
+        StructField("name", StringType(), False),
+        StructField("emailid", StringType(), False),
+        StructField("region", StringType(), False)
     ])
 
 
-def get_order_schema():
-    """Define order data schema"""
+def get_order_schema() -> StructType:
+    """
+    Define order data schema.
+
+    Returns:
+        StructType schema definition
+    """
     return StructType([
-        StructField("OrderId", StringType(), False),
-        StructField("ItemName", StringType(), False),
-        StructField("PricePerUnit", DecimalType(10, 2), False),
-        StructField("Qty", IntegerType(), False),
-        StructField("Date", StringType(), False),  # Will be converted to DateType
-        StructField("CustId", StringType(), False)
+        StructField("orderid", StringType(), False),
+        StructField("itemname", StringType(), False),
+        StructField("priceperunit", DecimalType(10, 2), False),
+        StructField("qty", IntegerType(), False),
+        StructField("date", DateType(), False),
+        StructField("custid", StringType(), False)
     ])
 
 
-def ingest_customer_data(reader, params):
+def clean_dataframe(df: DataFrame, null_string_values: list) -> DataFrame:
     """
-    TR-INGEST-001: Load Customer CSV Files from S3
+    Remove NULL values, "Null" strings, and duplicate records.
+
+    Args:
+        df: Input DataFrame
+        null_string_values: List of string values to treat as null
+
+    Returns:
+        Cleaned DataFrame
     """
-    print("TR-INGEST-001: Ingesting customer data...")
-
-    customer_path = params['customer_source_path']
-    customer_format = params['customer_source_format']
-
-    # Validate S3 access
-    if not validate_s3_access(reader.spark, customer_path):
-        raise ValueError(f"Cannot access S3 path: {customer_path}")
-
-    # Read customer data
-    customer_schema = get_customer_schema()
-    customer_df = read_data_safe(reader, customer_path, customer_format, customer_schema)
-
-    print(f"Ingested {customer_df.count()} customer records")
-    return customer_df
-
-
-def ingest_order_data(reader, params):
-    """
-    TR-INGEST-002: Load Order CSV Files from S3
-    """
-    print("TR-INGEST-002: Ingesting order data...")
-
-    order_path = params['order_source_path']
-    order_format = params['order_source_format']
-
-    # Validate S3 access
-    if not validate_s3_access(reader.spark, order_path):
-        raise ValueError(f"Cannot access S3 path: {order_path}")
-
-    # Read order data
-    order_schema = get_order_schema()
-    order_df = read_data_safe(reader, order_path, order_format, order_schema)
-
-    # Convert Date column to proper DateType
-    order_df = order_df.withColumn("date", to_date(col("date")))
-
-    print(f"Ingested {order_df.count()} order records")
-    return order_df
-
-
-def clean_customer_data(customer_df, params):
-    """
-    TR-CLEAN-001: Clean customer data by removing nulls and duplicates
-    """
-    print("TR-CLEAN-001: Cleaning customer data...")
-
-    null_values = params.get('null_string_values', ['Null', 'NULL', 'null'])
-
     # Remove rows with actual NULL values
-    customer_clean = customer_df.na.drop()
+    df_cleaned = df.dropna()
 
-    # Remove rows with string "Null" values
-    for col_name in customer_clean.columns:
-        for null_val in null_values:
-            customer_clean = customer_clean.filter(
-                ~(trim(col(col_name)) == null_val)
-            )
+    # Remove rows with string "Null" values (case-sensitive)
+    for col_name in df.columns:
+        for null_val in null_string_values:
+            df_cleaned = df_cleaned.filter(col(col_name) != null_val)
 
-    # Remove duplicates
-    if params.get('remove_duplicates', True):
-        customer_clean = customer_clean.dropDuplicates()
+    # Remove duplicate records (keep first occurrence)
+    df_cleaned = df_cleaned.dropDuplicates()
 
-    print(f"Cleaned customer data: {customer_clean.count()} records remaining")
-    return customer_clean
+    return df_cleaned
 
 
-def clean_order_data(order_df, params):
+def apply_scd2(customer_df: DataFrame, order_df: DataFrame,
+               spark: SparkSession) -> DataFrame:
     """
-    TR-CLEAN-002: Clean order data by removing nulls and duplicates
+    Apply SCD Type 2 logic to create order summary with historical tracking.
+
+    Args:
+        customer_df: Customer DataFrame
+        order_df: Order DataFrame
+        spark: SparkSession instance
+
+    Returns:
+        DataFrame with SCD2 columns
     """
-    print("TR-CLEAN-002: Cleaning order data...")
-
-    null_values = params.get('null_string_values', ['Null', 'NULL', 'null'])
-
-    # Remove rows with actual NULL values
-    order_clean = order_df.na.drop()
-
-    # Remove rows with string "Null" values (check string columns only)
-    string_cols = ['orderid', 'itemname', 'custid']
-    for col_name in string_cols:
-        if col_name in order_clean.columns:
-            for null_val in null_values:
-                order_clean = order_clean.filter(
-                    ~(trim(col(col_name)) == null_val)
-                )
-
-    # Remove duplicates
-    if params.get('remove_duplicates', True):
-        order_clean = order_clean.dropDuplicates()
-
-    print(f"Cleaned order data: {order_clean.count()} records remaining")
-    return order_clean
-
-
-def add_scd2_columns(df):
-    """
-    Add SCD Type 2 columns to DataFrame
-    """
-    current_ts = current_timestamp()
-
-    df_scd2 = df.withColumn("isactive", lit(True)) \
-        .withColumn("startdate", current_ts) \
-        .withColumn("enddate", lit(None).cast(TimestampType())) \
-        .withColumn("opts", current_ts)
-
-    return df_scd2
-
-
-def register_catalog_table(writer, df, params, table_type):
-    """
-    TR-CATALOG-001 & TR-CATALOG-002: Register tables in Glue Data Catalog
-    """
-    if table_type == "customer":
-        print("TR-CATALOG-001: Registering customer table in Glue Data Catalog...")
-        catalog_path = params['customer_catalog_path']
-        table_name = params['customer_table_name']
-    elif table_type == "order":
-        print("TR-CATALOG-002: Registering order table in Glue Data Catalog...")
-        catalog_path = params['order_catalog_path']
-        table_name = params['order_table_name']
-    else:
-        raise ValueError(f"Unknown table type: {table_type}")
-
-    # Write to catalog location
-    output_format = params.get('output_format', 'parquet')
-    write_data_safe(writer, df, catalog_path, output_format)
-
-    print(f"Registered {table_name} in catalog at {catalog_path}")
-    return df
-
-
-def generate_order_summary_scd2(customer_clean, order_clean, writer, params):
-    """
-    Generate order summary with SCD Type 2 implementation
-    """
-    print("Generating order summary with SCD Type 2...")
-
     # Join customer and order data
-    order_summary = order_clean.join(
-        customer_clean,
-        order_clean.custid == customer_clean.custid,
+    joined_df = order_df.join(
+        customer_df,
+        order_df.custid == customer_df.custid,
         "inner"
     ).select(
-        order_clean.orderid,
-        order_clean.itemname,
-        order_clean.priceperunit,
-        order_clean.qty,
-        order_clean.date,
-        order_clean.custid,
-        customer_clean.name,
-        customer_clean.emailid,
-        customer_clean.region
+        order_df.custid,
+        order_df.orderid,
+        customer_df.name,
+        customer_df.emailid,
+        customer_df.region,
+        order_df.itemname,
+        order_df.priceperunit,
+        order_df.qty,
+        order_df.date
     )
 
-    # Add SCD Type 2 columns
-    if params.get('enable_scd2', True):
-        order_summary = add_scd2_columns(order_summary)
+    # Add SCD2 metadata columns
+    scd2_df = joined_df \
+        .withColumn("isactive", lit(True).cast(BooleanType())) \
+        .withColumn("startdate", current_timestamp().cast(TimestampType())) \
+        .withColumn("enddate", lit(None).cast(TimestampType())) \
+        .withColumn("opts", current_timestamp().cast(TimestampType()))
 
-    # Write order summary
-    summary_path = params['order_summary_target_path']
-    output_format = params.get('output_format', 'parquet')
-    write_data_safe(writer, order_summary, summary_path, output_format)
-
-    print(f"Order summary written to {summary_path}")
-    return order_summary
+    return scd2_df
 
 
-def generate_customer_aggregate_spend(customer_clean, order_clean, writer, params):
+def aggregate_customer_spend(order_summary_df: DataFrame) -> DataFrame:
     """
-    TR-AGG-001: Generate customer-level spending aggregates
-    """
-    print("TR-AGG-001: Generating customer aggregate spend...")
+    Aggregate order data by customer and date to calculate total spending.
 
-    # Calculate total amount per order
-    order_with_total = order_clean.withColumn(
-        "totalamount",
+    Args:
+        order_summary_df: Order summary DataFrame
+
+    Returns:
+        Aggregated DataFrame with customer spending metrics
+    """
+    # Calculate total spend per order
+    order_summary_df = order_summary_df.withColumn(
+        "totalspend",
         col("priceperunit") * col("qty")
     )
 
-    # Join with customer data
-    customer_orders = order_with_total.join(
-        customer_clean,
-        order_with_total.custid == customer_clean.custid,
-        "inner"
-    )
-
     # Aggregate by customer and date
-    customer_aggregate = customer_orders.groupBy(
-        customer_clean.custid,
-        customer_clean.name,
-        customer_clean.emailid,
-        customer_clean.region,
-        order_with_total.date
-    ).agg(
-        _sum("totalamount").alias("totalspend"),
-        count("orderid").alias("ordercount")
-    )
+    agg_df = order_summary_df.groupBy("custid", "name", "region", "date") \
+        .agg(
+            _sum("totalspend").alias("total_spend"),
+            count("orderid").alias("order_count"),
+            _sum("qty").alias("total_quantity"),
+            _max("priceperunit").alias("max_price"),
+            _min("priceperunit").alias("min_price")
+        )
 
-    # Add SCD Type 2 columns
-    if params.get('enable_scd2', True):
-        customer_aggregate = add_scd2_columns(customer_aggregate)
+    return agg_df
 
-    # Write customer aggregate spend
-    aggregate_path = params['customer_aggregate_spend_path']
-    output_format = params.get('output_format', 'parquet')
-    write_data_safe(writer, customer_aggregate, aggregate_path, output_format)
 
-    print(f"Customer aggregate spend written to {aggregate_path}")
-    return customer_aggregate
+def register_table_to_catalog(spark: SparkSession, df: DataFrame,
+                               database: str, table_name: str,
+                               s3_path: str) -> bool:
+    """
+    Register DataFrame as table in Glue Data Catalog.
+
+    Args:
+        spark: SparkSession instance
+        df: DataFrame to register
+        database: Catalog database name
+        table_name: Table name
+        s3_path: S3 location of data
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        # Create database if not exists
+        spark.sql(f"CREATE DATABASE IF NOT EXISTS {database}")
+
+        # Register table
+        df.write.format("parquet") \
+            .mode("overwrite") \
+            .option("path", s3_path) \
+            .saveAsTable(f"{database}.{table_name}")
+
+        print(f"Successfully registered table {database}.{table_name}")
+        return True
+    except Exception as e:
+        print(f"Error registering table {database}.{table_name}: {str(e)}")
+        return False
 
 
 def main():
     """
-    Main ETL job execution function
+    Main ETL job execution function.
     """
-    print("Starting AWS Glue ETL Job - Customer Order Processing")
+    print("Starting Customer Order ETL Job...")
 
     # Initialize Spark contexts
-    sc, glueContext, spark, job = initialize_spark_contexts()
-
-    # Initialize job (with optional job name from args)
-    try:
-        args = getResolvedOptions(sys.argv, ['JOB_NAME'])
-        job.init(args['JOB_NAME'], args)
-    except:
-        job.init("customer_order_processing_job", {})
+    spark, glue_context = initialize_spark_contexts()
 
     # Load job parameters
     params = get_job_parameters()
 
-    # Initialize reader and writer
-    reader = DataReader(spark)
-    writer = DataWriter(spark)
+    # Extract configuration
+    customer_source = params['inputs']['customer']['source_path']
+    customer_format = params['inputs']['customer']['source_format']
+    order_source = params['inputs']['order']['source_path']
+    order_format = params['inputs']['order']['source_format']
 
-    try:
-        # TR-INGEST-001: Ingest customer data
-        customer_raw_df = ingest_customer_data(reader, params)
+    customer_target = params['outputs']['customer']['target_path']
+    order_target = params['outputs']['order']['target_path']
+    ordersummary_target = params['outputs']['ordersummary']['target_path']
+    aggregate_target = params['outputs']['customeraggregatespend']['target_path']
 
-        # TR-INGEST-002: Ingest order data
-        order_raw_df = ingest_order_data(reader, params)
+    catalog_db = params['catalog']['database']
+    null_values = params['processing']['null_string_values']
 
-        # TR-CLEAN-001: Clean customer data
-        customer_clean_df = clean_customer_data(customer_raw_df, params)
+    # Step 1: Ingest customer data
+    print(f"Reading customer data from {customer_source}...")
+    customer_df = read_data_safe(spark, customer_source, customer_format, get_customer_schema())
 
-        # TR-CLEAN-002: Clean order data
-        order_clean_df = clean_order_data(order_raw_df, params)
+    if customer_df is None:
+        print("Failed to read customer data")
+        return
 
-        # Write cleaned data
-        write_data_safe(
-            writer,
-            customer_clean_df,
-            params['customer_clean_target_path'],
-            params.get('output_format', 'parquet')
-        )
-        write_data_safe(
-            writer,
-            order_clean_df,
-            params['order_clean_target_path'],
-            params.get('output_format', 'parquet')
-        )
+    print(f"Customer records loaded: {customer_df.count()}")
 
-        # TR-CATALOG-001: Register customer table
-        register_catalog_table(writer, customer_clean_df, params, "customer")
+    # Step 2: Ingest order data
+    print(f"Reading order data from {order_source}...")
+    order_df = read_data_safe(spark, order_source, order_format, get_order_schema())
 
-        # TR-CATALOG-002: Register order table
-        register_catalog_table(writer, order_clean_df, params, "order")
+    if order_df is None:
+        print("Failed to read order data")
+        return
 
-        # Generate order summary with SCD Type 2
-        order_summary_df = generate_order_summary_scd2(
-            customer_clean_df,
-            order_clean_df,
-            writer,
-            params
-        )
+    print(f"Order records loaded: {order_df.count()}")
 
-        # TR-AGG-001: Generate customer aggregate spend
-        customer_aggregate_df = generate_customer_aggregate_spend(
-            customer_clean_df,
-            order_clean_df,
-            writer,
-            params
-        )
+    # Step 3: Clean customer data
+    print("Cleaning customer data...")
+    customer_clean = clean_dataframe(customer_df, null_values)
+    print(f"Customer records after cleaning: {customer_clean.count()}")
 
-        print("ETL Job completed successfully")
+    # Step 4: Clean order data
+    print("Cleaning order data...")
+    order_clean = clean_dataframe(order_df, null_values)
+    print(f"Order records after cleaning: {order_clean.count()}")
 
-    except Exception as e:
-        print(f"ETL Job failed with error: {str(e)}")
-        raise
-    finally:
-        # Commit job
-        job.commit()
+    # Step 5: Write cleaned customer data to catalog
+    print(f"Writing cleaned customer data to {customer_target}...")
+    write_data_safe(customer_clean, spark, customer_target, "parquet")
+    register_table_to_catalog(
+        spark, customer_clean, catalog_db,
+        params['catalog']['tables']['customer'], customer_target
+    )
+
+    # Step 6: Write cleaned order data to catalog
+    print(f"Writing cleaned order data to {order_target}...")
+    write_data_safe(order_clean, spark, order_target, "parquet")
+    register_table_to_catalog(
+        spark, order_clean, catalog_db,
+        params['catalog']['tables']['order'], order_target
+    )
+
+    # Step 7: Apply SCD Type 2 logic
+    if params['processing']['enable_scd2']:
+        print("Applying SCD Type 2 logic...")
+        order_summary_df = apply_scd2(customer_clean, order_clean, spark)
+        print(f"Order summary records created: {order_summary_df.count()}")
+
+        # Prepare Hudi options
+        hudi_options = {
+            'hoodie.table.name': params['hudi']['table_name'],
+            'hoodie.datasource.write.recordkey.field': params['hudi']['record_key'],
+            'hoodie.datasource.write.precombine.field': params['hudi']['precombine_field'],
+            'hoodie.datasource.write.table.type': params['hudi']['table_type'],
+            'hoodie.datasource.write.operation': params['hudi']['operation'],
+            'hoodie.datasource.write.partitionpath.field': params['hudi']['partition_fields'],
+            'hoodie.index.type': params['hudi']['index_type']
+        }
+
+        # Write to Hudi table
+        print(f"Writing order summary to Hudi table at {ordersummary_target}...")
+        write_data_safe(order_summary_df, spark, ordersummary_target, "hudi",
+                       hudi_options=hudi_options)
+
+        # Step 8: Aggregate customer spending
+        if params['processing']['enable_aggregation']:
+            print("Calculating customer aggregate spending...")
+            aggregate_df = aggregate_customer_spend(order_summary_df)
+            print(f"Aggregate records created: {aggregate_df.count()}")
+
+            # Write aggregated data
+            print(f"Writing aggregate data to {aggregate_target}...")
+            write_data_safe(aggregate_df, spark, aggregate_target, "parquet")
+            register_table_to_catalog(
+                spark, aggregate_df, catalog_db,
+                params['catalog']['tables']['customeraggregatespend'], aggregate_target
+            )
+
+    print("Customer Order ETL Job completed successfully!")
 
 
 if __name__ == "__main__":

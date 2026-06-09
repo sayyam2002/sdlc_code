@@ -1,5 +1,5 @@
 """
-AWS Glue PySpark ETL Job - Customer Order Processing
+AWS Glue PySpark ETL Job - Customer Order Analytics
 Main package initialization
 """
 
