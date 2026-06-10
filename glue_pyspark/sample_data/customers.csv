@@ -1,11 +1,6 @@
-CustId,Name,EmailId,Region
-C001,John Doe,john.doe@example.com,North
-C002,Jane Smith,jane.smith@example.com,South
-C003,Bob Johnson,bob.johnson@example.com,East
-C004,Alice Brown,alice.brown@example.com,West
-C005,Charlie Wilson,charlie.wilson@example.com,North
-C006,Diana Prince,diana.prince@example.com,South
-C007,Null,evan.davis@example.com,East
-C008,Frank Miller,Null,West
-C009,Grace Lee,grace.lee@example.com,North
-C010,Henry Ford,henry.ford@example.com,South
+cid,fname,lname
+1,John,Doe
+2,Jane,Smith
+3,Bob,Johnson
+4,Alice,Brown
+5,Charlie,Davis

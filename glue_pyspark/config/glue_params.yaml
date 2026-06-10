@@ -1,58 +1,45 @@
 # AWS Glue Job Parameters Configuration
+# Customer Order Analytics ETL Pipeline
 
-# Customer Data Source
-customer_source_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
-customer_source_format: "csv"
-customer_source_options:
-  header: "true"
-  inferSchema: "true"
-  delimiter: ","
+job_name: customer_order_analytics_etl
+job_description: Extract, validate, transform and load customer order data
 
-# Order Data Source
-order_source_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
-order_source_format: "csv"
-order_source_options:
-  header: "true"
-  inferSchema: "true"
-  delimiter: ","
+# Input Sources
+inputs_customers_path: s3://adif-sdlc/busi_req_doc/customers.csv
+inputs_customers_format: csv
+inputs_orders_path: s3://adif-sdlc/busi_req_doc/orders.csv
+inputs_orders_format: csv
 
-# Customer Data Target
-customer_target_path: "s3://adif-sdlc/catalog/sdlc_wizard/customer/"
-customer_target_format: "parquet"
-customer_target_mode: "overwrite"
+# Output Targets
+outputs_target_path: s3://adif-sdlc/output/customer_orders/
+outputs_target_format: parquet
+outputs_partition_by: processed_date
 
-# Order Data Target
-order_target_path: "s3://adif-sdlc/catalog/sdlc_wizard/order/"
-order_target_format: "parquet"
-order_target_mode: "overwrite"
+# Error Logging
+error_log_base_path: s3://adif-sdlc/logs/errors/
+error_log_customers_path: s3://adif-sdlc/logs/errors/customers/
+error_log_orders_path: s3://adif-sdlc/logs/errors/orders/
+error_log_format: csv
 
-# Customer Aggregate Spend Target
-aggregate_target_path: "s3://adif-sdlc/analytics/customeraggregatespend/"
-aggregate_target_format: "parquet"
-aggregate_target_mode: "overwrite"
+# Job Execution Parameters
+glue_version: "3.0"
+worker_type: G.1X
+number_of_workers: 5
+max_retries: 1
+timeout_minutes: 60
 
-# AWS Glue Catalog Configuration
-glue_database: "gen_ai_poc_databrickscoe"
-customer_table_name: "customer"
-order_table_name: "order"
-aggregate_table_name: "customeraggregatespend"
+# Data Quality Thresholds
+max_error_percentage: 10
+enable_data_validation: true
+enable_duplicate_removal: true
 
-# Expected Schemas
-customer_expected_columns:
-  - "custid"
-  - "name"
-  - "emailid"
-  - "region"
+# CSV Read Options
+csv_header: true
+csv_infer_schema: false
+csv_delimiter: ","
+csv_quote: "\""
+csv_escape: "\\"
 
-order_expected_columns:
-  - "orderid"
-  - "itemname"
-  - "priceperunit"
-  - "qty"
-  - "date"
-  - "custid"
-
-# Processing Options
-enable_data_cleaning: true
-remove_nulls: true
-remove_duplicates: true
+# Parquet Write Options
+parquet_compression: snappy
+parquet_mode: overwrite
