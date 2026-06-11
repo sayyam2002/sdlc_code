@@ -1,0 +1,38 @@
+# AWS Glue Job Parameters Configuration
+
+# Source Data Paths
+customer_source_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
+order_source_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
+
+# CSV Format Options
+csv_separator: ","
+csv_header: "True"
+
+# Null Handling
+null_string_value: "Null"
+
+# Glue Data Catalog Configuration
+catalog_database: "gen_ai_poc_databrickscoe"
+customer_table_name: "sdlc_wizard_customer"
+order_table_name: "sdlc_wizard_order"
+ordersummary_table_name: "ordersummary"
+customeraggregatespend_table_name: "customeraggregatespend"
+
+# Target Data Paths
+ordersummary_target_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
+customeraggregatespend_target_path: "s3://adif-sdlc/analytics/customeraggregatespend/"
+
+# Hudi Configuration
+hudi_table_name: "ordersummary"
+hudi_record_key: "CustId,OrderId"
+hudi_precombine_field: "OpTs"
+hudi_operation: "upsert"
+hudi_table_type: "COPY_ON_WRITE"
+
+# Aggregation Configuration
+aggregation_output_format: "parquet"
+aggregation_write_mode: "overwrite"
+
+# Monitoring Configuration
+enable_cloudwatch_metrics: "true"
+log_level: "INFO"

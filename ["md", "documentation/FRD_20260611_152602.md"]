@@ -1,0 +1,388 @@
+# FUNCTIONAL REQUIREMENTS DOCUMENT (FRD)
+
+## 1. Document Overview
+
+### 1.1 Purpose
+This Functional Requirements Document (FRD) translates the business requirements specified in the Business Requirement Document (BRD) for Use Case 1 into detailed, implementation-ready functional requirements for the AWS-based data processing pipeline. This document serves as the foundation for technical design and development activities.
+
+### 1.2 Scope
+This FRD covers the following functional areas:
+- Ingestion of customer and order data from AWS S3
+- Data cleaning and deduplication processes
+- AWS Glue Catalog table registration
+- SCD Type 2 implementation using Apache Hudi for order summary data
+- Incremental data processing logic
+- Customer aggregate spend calculation and storage
+- AWS architecture component utilization
+
+### 1.3 Source Document Reference
+- **Source BRD**: Business Requirement Document – AWS Version
+- **S3 Path**: s3://adif-sdlc/brd_usecase1/BusinessRequirementDocument_usecase1.pdf
+
+### 1.4 Assumptions
+- AWS infrastructure (S3, Glue, Athena, CloudWatch) is provisioned and accessible
+- Appropriate IAM roles and permissions are configured for service access
+- Source data files are deposited in the specified S3 locations in CSV format
+- Apache Hudi framework is available within AWS Glue environment
+- Lake Formation configuration (if used) is managed outside this implementation scope
+
+---
+
+## 2. Functional Requirements
+
+### **FR-INGEST-001: Ingest Customer Data from S3**
+- **BRD Reference**: Section 1 (Source Input)
+- **Description**: The system shall read customer data files in CSV format from the designated S3 location.
+- **Inputs**: 
+  - Source Path: s3://adif-sdlc/sdlc_wizard/customerdata/
+  - Schema: CustId, Name, EmailId, Region
+- **Processing Rules**:
+  - Read all CSV files from the specified S3 path
+  - Parse CSV with header row containing: CustId, Name, EmailId, Region
+  - Preserve data types as defined in source
+- **Outputs**: Customer dataset in memory/staging area with fields: CustId, Name, EmailId, Region
+- **Preconditions**: 
+  - S3 bucket and path exist and are accessible
+  - CSV files are present in the source location
+- **Postconditions**: Customer data is loaded and available for downstream processing
+- **Error Conditions**:
+  - S3 path not accessible
+  - CSV format mismatch or parsing errors
+  - Missing required columns
+
+---
+
+### **FR-INGEST-002: Ingest Order Data from S3**
+- **BRD Reference**: Section 1 (Source Input)
+- **Description**: The system shall read order data files in CSV format from the designated S3 location.
+- **Inputs**: 
+  - Source Path: s3://adif-sdlc/sdlc_wizard/orderdata/
+  - Schema: OrderId, ItemName, PricePerUnit, Qty, Date, CustId
+- **Processing Rules**:
+  - Read all CSV files from the specified S3 path
+  - Parse CSV with header row containing: OrderId, ItemName, PricePerUnit, Qty, Date, CustId
+  - Preserve data types as defined in source
+- **Outputs**: Order dataset in memory/staging area with fields: OrderId, ItemName, PricePerUnit, Qty, Date, CustId
+- **Preconditions**: 
+  - S3 bucket and path exist and are accessible
+  - CSV files are present in the source location
+- **Postconditions**: Order data is loaded and available for downstream processing
+- **Error Conditions**:
+  - S3 path not accessible
+  - CSV format mismatch or parsing errors
+  - Missing required columns
+
+---
+
+### **FR-CLEAN-001: Remove Null Values from Customer Dataset**
+- **BRD Reference**: Section 3 (Data Cleaning)
+- **Description**: The system shall remove records containing "Null" (string) and NULL values from the customer dataset.
+- **Inputs**: Customer dataset with fields: CustId, Name, EmailId, Region
+- **Processing Rules**:
+  - Identify records where any field contains the string "Null" (case-sensitive as specified)
+  - Identify records where any field contains NULL values
+  - Remove all identified records from the dataset
+- **Outputs**: Cleaned customer dataset with no "Null" or NULL values
+- **Preconditions**: Customer data has been ingested (FR-INGEST-001)
+- **Postconditions**: Customer dataset contains only records with valid, non-null values
+- **Error Conditions**: Not specified in BRD
+
+---
+
+### **FR-CLEAN-002: Remove Null Values from Order Dataset**
+- **BRD Reference**: Section 3 (Data Cleaning)
+- **Description**: The system shall remove records containing "Null" (string) and NULL values from the order dataset.
+- **Inputs**: Order dataset with fields: OrderId, ItemName, PricePerUnit, Qty, Date, CustId
+- **Processing Rules**:
+  - Identify records where any field contains the string "Null" (case-sensitive as specified)
+  - Identify records where any field contains NULL values
+  - Remove all identified records from the dataset
+- **Outputs**: Cleaned order dataset with no "Null" or NULL values
+- **Preconditions**: Order data has been ingested (FR-INGEST-002)
+- **Postconditions**: Order dataset contains only records with valid, non-null values
+- **Error Conditions**: Not specified in BRD
+
+---
+
+### **FR-CLEAN-003: Remove Duplicate Records from Customer Dataset**
+- **BRD Reference**: Section 3 (Data Cleaning)
+- **Description**: The system shall remove duplicate records from the customer dataset.
+- **Inputs**: Customer dataset with fields: CustId, Name, EmailId, Region
+- **Processing Rules**:
+  - Identify duplicate records based on all fields
+  - Retain one instance of each unique record
+  - Remove all duplicate instances
+- **Outputs**: Deduplicated customer dataset
+- **Preconditions**: Null value removal has been completed (FR-CLEAN-001)
+- **Postconditions**: Customer dataset contains only unique records
+- **Error Conditions**: Not specified in BRD
+
+---
+
+### **FR-CLEAN-004: Remove Duplicate Records from Order Dataset**
+- **BRD Reference**: Section 3 (Data Cleaning)
+- **Description**: The system shall remove duplicate records from the order dataset.
+- **Inputs**: Order dataset with fields: OrderId, ItemName, PricePerUnit, Qty, Date, CustId
+- **Processing Rules**:
+  - Identify duplicate records based on all fields
+  - Retain one instance of each unique record
+  - Remove all duplicate instances
+- **Outputs**: Deduplicated order dataset
+- **Preconditions**: Null value removal has been completed (FR-CLEAN-002)
+- **Postconditions**: Order dataset contains only unique records
+- **Error Conditions**: Not specified in BRD
+
+---
+
+### **FR-CATALOG-001: Register Customer Table in Glue Data Catalog**
+- **BRD Reference**: Section 4 (Glue Catalog Tables)
+- **Description**: The system shall register the cleaned customer data as a table in the AWS Glue Data Catalog.
+- **Inputs**: Cleaned and deduplicated customer dataset
+- **Processing Rules**:
+  - Register table in database: gen_ai_poc_databrickscoe
+  - Table name: sdlc_wizard_customer
+  - Schema: CustId, Name, EmailId, Region
+- **Outputs**: Glue Catalog table "sdlc_wizard_customer" in database "gen_ai_poc_databrickscoe"
+- **Preconditions**: 
+  - Data cleaning completed (FR-CLEAN-001, FR-CLEAN-003)
+  - Glue database "gen_ai_poc_databrickscoe" exists
+- **Postconditions**: Customer table is queryable via Athena and accessible to Glue jobs
+- **Error Conditions**:
+  - Database does not exist
+  - Insufficient permissions to create catalog table
+
+---
+
+### **FR-CATALOG-002: Register Order Table in Glue Data Catalog**
+- **BRD Reference**: Section 4 (Glue Catalog Tables)
+- **Description**: The system shall register the cleaned order data as a table in the AWS Glue Data Catalog.
+- **Inputs**: Cleaned and deduplicated order dataset
+- **Processing Rules**:
+  - Register table in database: gen_ai_poc_databrickscoe
+  - Table name: sdlc_wizard_order
+  - Schema: OrderId, ItemName, PricePerUnit, Qty, Date, CustId
+- **Outputs**: Glue Catalog table "sdlc_wizard_order" in database "gen_ai_poc_databrickscoe"
+- **Preconditions**: 
+  - Data cleaning completed (FR-CLEAN-002, FR-CLEAN-004)
+  - Glue database "gen_ai_poc_databrickscoe" exists
+- **Postconditions**: Order table is queryable via Athena and accessible to Glue jobs
+- **Error Conditions**:
+  - Database does not exist
+  - Insufficient permissions to create catalog table
+
+---
+
+### **FR-SCD2-001: Implement SCD Type 2 for Order Summary Table**
+- **BRD Reference**: Section 5 (SCD Type 2) and Section 6 (Incremental Logic)
+- **Description**: The system shall implement Slowly Changing Dimension Type 2 logic using Apache Hudi to maintain historical records in the ordersummary table.
+- **Inputs**: 
+  - Cleaned customer dataset (CustId, Name, EmailId, Region)
+  - Cleaned order dataset (OrderId, ItemName, PricePerUnit, Qty, Date, CustId)
+- **Processing Rules**:
+  - Join customer and order datasets on CustId
+  - Compare incoming records with existing active records in ordersummary table
+  - On change detection:
+    - Close previous row by setting IsActive to false (or equivalent)
+    - Update EndDate to current timestamp
+    - Insert new row with IsActive set to true
+    - Set StartDate to current timestamp
+    - Set OpTs (operation timestamp) to current timestamp
+  - For new records (no existing match):
+    - Insert as new active row with IsActive = true
+    - Set StartDate to current timestamp
+    - Set EndDate to null or future date
+    - Set OpTs to current timestamp
+  - Customer updates trigger SCD2 updates in ordersummary
+- **Outputs**: 
+  - Target Table: ordersummary
+  - Location: s3://adif-sdlc/curated/sdlc_wizard/ordersummary/
+  - Format: Apache Hudi
+  - Metadata fields: IsActive, StartDate, EndDate, OpTs
+- **Preconditions**: 
+  - Customer and order data are cleaned and cataloged
+  - Hudi framework is available in Glue environment
+  - Target S3 location is accessible
+- **Postconditions**: 
+  - ordersummary table contains current and historical records
+  - All active records have IsActive = true
+  - All closed records have IsActive = false with appropriate EndDate
+- **Error Conditions**:
+  - Join key (CustId) mismatch or missing
+  - Hudi write operation failure
+  - S3 write permission issues
+
+---
+
+### **FR-CATALOG-003: Register Order Summary Table in Glue Data Catalog**
+- **BRD Reference**: Section 4 (Glue Catalog Tables)
+- **Description**: The system shall register the ordersummary table in the AWS Glue Data Catalog.
+- **Inputs**: ordersummary table stored in Hudi format at s3://adif-sdlc/curated/sdlc_wizard/ordersummary/
+- **Processing Rules**:
+  - Register table in database: gen_ai_poc_databrickscoe
+  - Table name: ordersummary
+  - Include SCD2 metadata fields: IsActive, StartDate, EndDate, OpTs
+- **Outputs**: Glue Catalog table "ordersummary" in database "gen_ai_poc_databrickscoe"
+- **Preconditions**: 
+  - SCD2 processing completed (FR-SCD2-001)
+  - Hudi table exists at specified S3 location
+- **Postconditions**: ordersummary table is queryable via Athena
+- **Error Conditions**:
+  - Hudi table metadata not readable
+  - Catalog registration failure
+
+---
+
+### **FR-AGG-001: Calculate Customer Aggregate Spend**
+- **BRD Reference**: Section 7 (Aggregation Table)
+- **Description**: The system shall calculate total spending per customer and store results in the customeraggregatespend table.
+- **Inputs**: 
+  - ordersummary table (or joined customer + order data)
+  - Required fields: Name, PricePerUnit, Qty, Date
+- **Processing Rules**:
+  - Calculate TotalAmount = PricePerUnit * Qty for each order
+  - Aggregate TotalAmount by customer Name and Date
+  - Not specified in BRD: Aggregation level (daily, monthly, or all-time per customer)
+- **Outputs**: 
+  - Table: customeraggregatespend
+  - Location: s3://adif-sdlc/analytics/customeraggregatespend/
+  - Columns: Name, TotalAmount, Date
+- **Preconditions**: 
+  - ordersummary table is available or source data is processed
+- **Postconditions**: 
+  - customeraggregatespend table contains aggregated spending data
+  - Data is stored at specified S3 location
+- **Error Conditions**:
+  - Calculation errors (null or invalid numeric values)
+  - S3 write permission issues
+
+---
+
+### **FR-CATALOG-004: Register Customer Aggregate Spend Table in Glue Data Catalog**
+- **BRD Reference**: Section 4 (Glue Catalog Tables)
+- **Description**: The system shall register the customeraggregatespend table in the AWS Glue Data Catalog.
+- **Inputs**: customeraggregatespend table stored at s3://adif-sdlc/analytics/customeraggregatespend/
+- **Processing Rules**:
+  - Register table in database: gen_ai_poc_databrickscoe
+  - Table name: customeraggregatespend
+  - Schema: Name, TotalAmount, Date
+- **Outputs**: Glue Catalog table "customeraggregatespend" in database "gen_ai_poc_databrickscoe"
+- **Preconditions**: 
+  - Aggregation processing completed (FR-AGG-001)
+  - Table exists at specified S3 location
+- **Postconditions**: customeraggregatespend table is queryable via Athena
+- **Error Conditions**:
+  - Table metadata not readable
+  - Catalog registration failure
+
+---
+
+### **FR-ARCH-001: Utilize AWS Architecture Components**
+- **BRD Reference**: Section 8 (AWS Architecture Components)
+- **Description**: The system shall utilize specified AWS services for data processing, storage, cataloging, querying, and monitoring.
+- **Inputs**: Not applicable
+- **Processing Rules**:
+  - Use S3 for all data storage (source, curated, analytics)
+  - Use AWS Glue for ETL processing with Spark and Hudi frameworks
+  - Use Glue Data Catalog for metadata management
+  - Use Athena for querying cataloged tables
+  - Use CloudWatch for monitoring job execution and system health
+  - Optionally use Lake Formation for data governance (if configured)
+- **Outputs**: Functional data pipeline using specified AWS services
+- **Preconditions**: AWS services are provisioned and accessible
+- **Postconditions**: All processing leverages specified AWS architecture
+- **Error Conditions**:
+  - Service unavailability
+  - Configuration or permission issues
+
+---
+
+## 3. Data Source Details
+
+### 3.1 Customer Data Source
+- **Type**: CSV files
+- **Location**: s3://adif-sdlc/sdlc_wizard/customerdata/
+- **Schema**:
+  - CustId
+  - Name
+  - EmailId
+  - Region
+- **Format**: CSV with header row
+
+### 3.2 Order Data Source
+- **Type**: CSV files
+- **Location**: s3://adif-sdlc/sdlc_wizard/orderdata/
+- **Schema**:
+  - OrderId
+  - ItemName
+  - PricePerUnit
+  - Qty
+  - Date
+  - CustId
+- **Format**: CSV with header row
+
+### 3.3 Target Data Locations
+
+#### 3.3.1 Order Summary (SCD Type 2)
+- **Table Name**: ordersummary
+- **Location**: s3://adif-sdlc/curated/sdlc_wizard/ordersummary/
+- **Format**: Apache Hudi
+- **Database**: gen_ai_poc_databrickscoe
+- **Additional Fields**: IsActive, StartDate, EndDate, OpTs
+
+#### 3.3.2 Customer Aggregate Spend
+- **Table Name**: customeraggregatespend
+- **Location**: s3://adif-sdlc/analytics/customeraggregatespend/
+- **Schema**: Name, TotalAmount, Date
+- **Database**: gen_ai_poc_databrickscoe
+
+### 3.4 Glue Data Catalog
+- **Database Name**: gen_ai_poc_databrickscoe
+- **Tables**:
+  - sdlc_wizard_customer
+  - sdlc_wizard_order
+  - ordersummary
+  - customeraggregatespend
+
+---
+
+## 4. Non-Functional Requirements
+
+### 4.1 Technology Stack
+- **Storage**: AWS S3
+- **ETL Framework**: AWS Glue with Apache Spark and Apache Hudi
+- **Metadata Catalog**: AWS Glue Data Catalog
+- **Query Engine**: Amazon Athena
+- **Monitoring**: Amazon CloudWatch
+- **Governance (Optional)**: AWS Lake Formation
+
+### 4.2 Data Format Standards
+- **Source Data**: CSV format with headers
+- **Curated Data**: Apache Hudi format for SCD Type 2 tables
+- **Analytics Data**: Format not specified in BRD
+
+---
+
+## 5. Requirement Traceability Matrix
+
+| FR ID | BRD Section | Description |
+|-------|-------------|-------------|
+| FR-INGEST-001 | Section 1 (Source Input) | Ingest customer data from S3 location s3://adif-sdlc/sdlc_wizard/customerdata/ |
+| FR-INGEST-002 | Section 1 (Source Input) | Ingest order data from S3 location s3://adif-sdlc/sdlc_wizard/orderdata/ |
+| FR-CLEAN-001 | Section 3 (Data Cleaning) | Remove "Null" and NULL values from customer dataset |
+| FR-CLEAN-002 | Section 3 (Data Cleaning) | Remove "Null" and NULL values from order dataset |
+| FR-CLEAN-003 | Section 3 (Data Cleaning) | Remove duplicate records from customer dataset |
+| FR-CLEAN-004 | Section 3 (Data Cleaning) | Remove duplicate records from order dataset |
+| FR-CATALOG-001 | Section 4 (Glue Catalog Tables) | Register sdlc_wizard_customer table in gen_ai_poc_databrickscoe database |
+| FR-CATALOG-002 | Section 4 (Glue Catalog Tables) | Register sdlc_wizard_order table in gen_ai_poc_databrickscoe database |
+| FR-SCD2-001 | Section 5 (SCD Type 2), Section 6 (Incremental Logic) | Implement SCD Type 2 for ordersummary table using Hudi with IsActive, StartDate, EndDate, OpTs fields |
+| FR-CATALOG-003 | Section 4 (Glue Catalog Tables) | Register ordersummary table in gen_ai_poc_databrickscoe database |
+| FR-AGG-001 | Section 7 (Aggregation Table) | Calculate customer aggregate spend and store in customeraggregatespend table |
+| FR-CATALOG-004 | Section 4 (Glue Catalog Tables) | Register customeraggregatespend table in gen_ai_poc_databrickscoe database |
+| FR-ARCH-001 | Section 8 (AWS Architecture Components) | Utilize AWS services: S3, Glue, Catalog, Athena, CloudWatch, and optionally Lake Formation |
+
+---
+
+**Document Version**: 1.0  
+**Date**: Not specified in BRD  
+**Prepared By**: Senior Business Analyst  
+**Status**: Ready for Technical Design
