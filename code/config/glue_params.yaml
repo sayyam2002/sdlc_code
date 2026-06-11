@@ -1,38 +1,48 @@
 # AWS Glue Job Parameters Configuration
 
 # Source Data Paths
-customer_source_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
-order_source_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
-
-# CSV Format Options
-csv_separator: ","
-csv_header: "True"
-
-# Null Handling
-null_string_value: "Null"
-
-# Glue Data Catalog Configuration
-catalog_database: "gen_ai_poc_databrickscoe"
-customer_table_name: "sdlc_wizard_customer"
-order_table_name: "sdlc_wizard_order"
-ordersummary_table_name: "ordersummary"
-customeraggregatespend_table_name: "customeraggregatespend"
+source:
+  customer_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
+  order_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
 
 # Target Data Paths
-ordersummary_target_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
-customeraggregatespend_target_path: "s3://adif-sdlc/analytics/customeraggregatespend/"
+target:
+  curated_path: "s3://adif-sdlc/curated/sdlc_wizard/"
+  analytics_path: "s3://adif-sdlc/analytics/"
+  customer_catalog_path: "s3://adif-sdlc/catalog/sdlc_wizard/customer/"
+  order_catalog_path: "s3://adif-sdlc/catalog/sdlc_wizard/order/"
+  ordersummary_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
+  customeraggregatespend_path: "s3://adif-sdlc/analytics/customeraggregatespend/"
+
+# Glue Catalog Configuration
+catalog:
+  database: "gen_ai_poc_databrickscoe"
+  customer_table: "sdlc_wizard_customer"
+  order_table: "sdlc_wizard_order"
+  ordersummary_table: "ordersummary"
+  customeraggregatespend_table: "customeraggregatespend"
+
+# Data Processing Configuration
+processing:
+  null_string_value: "Null"
+  file_format: "csv"
+  header: true
+  infer_schema: true
+  output_format: "parquet"
+  compression: "snappy"
 
 # Hudi Configuration
-hudi_table_name: "ordersummary"
-hudi_record_key: "CustId,OrderId"
-hudi_precombine_field: "OpTs"
-hudi_operation: "upsert"
-hudi_table_type: "COPY_ON_WRITE"
+hudi:
+  table_name: "ordersummary"
+  table_type: "COPY_ON_WRITE"
+  record_key: "CustId,OrderId"
+  precombine_field: "OpTs"
+  partition_path: ""
+  operation: "upsert"
+  hive_sync_enabled: true
+  hive_sync_mode: "hms"
 
-# Aggregation Configuration
-aggregation_output_format: "parquet"
-aggregation_write_mode: "overwrite"
-
-# Monitoring Configuration
-enable_cloudwatch_metrics: "true"
-log_level: "INFO"
+# Spark Configuration
+spark:
+  app_name: "UseCase1_ETL_Pipeline"
+  log_level: "INFO"

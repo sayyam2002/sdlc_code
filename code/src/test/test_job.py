@@ -1,34 +1,31 @@
 """
-Unit tests for AWS Glue ETL Job
-
-Tests validate transformation logic without requiring AWS infrastructure.
-All external dependencies (S3, Glue Catalog, Hudi) are mocked.
+Unit tests for AWS Glue ETL Job - Use Case 1
 """
 
 import pytest
 from unittest.mock import Mock, MagicMock, patch
 from pyspark.sql import SparkSession
-from pyspark.sql.types import StructType, StructField, StringType, DoubleType, IntegerType, BooleanType, TimestampType
+from pyspark.sql.types import StructType, StructField, StringType, DoubleType, IntegerType
 from datetime import datetime
+import sys
+import os
+
+# Add src to path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+from main.job import (
+    DataCleaner, SCD2Processor, AggregationProcessor,
+    S3Reader, S3Writer
+)
 
 
 @pytest.fixture(scope="session")
 def spark():
     """Create Spark session for testing"""
-    spark = SparkSession.builder \
+    return SparkSession.builder \
         .master("local[2]") \
-        .appName("test") \
+        .appName("test_glue_job") \
         .getOrCreate()
-    yield spark
-    spark.stop()
-
-
-@pytest.fixture
-def mock_glue_context():
-    """Mock Glue context"""
-    mock_context = Mock()
-    mock_context.get_logger = Mock(return_value=Mock())
-    return mock_context
 
 
 @pytest.fixture
@@ -44,10 +41,9 @@ def sample_customer_data(spark):
     data = [
         ("C001", "John Doe", "john@example.com", "North"),
         ("C002", "Jane Smith", "jane@example.com", "South"),
-        ("C003", "Bob Johnson", "bob@example.com", "East"),
-        ("C001", "John Doe", "john@example.com", "North"),  # Duplicate
-        ("C004", "Null", "alice@example.com", "West"),  # Contains "Null"
-        ("C005", None, "charlie@example.com", "North")  # Contains NULL
+        ("C003", "Bob Wilson", "Null", "East"),
+        ("C004", None, "alice@example.com", "West"),
+        ("C001", "John Doe", "john@example.com", "North")  # Duplicate
     ]
     
     return spark.createDataFrame(data, schema)
@@ -59,18 +55,18 @@ def sample_order_data(spark):
     schema = StructType([
         StructField("OrderId", StringType(), True),
         StructField("ItemName", StringType(), True),
-        StructField("PricePerUnit", StringType(), True),
-        StructField("Qty", StringType(), True),
+        StructField("PricePerUnit", DoubleType(), True),
+        StructField("Qty", IntegerType(), True),
         StructField("Date", StringType(), True),
         StructField("CustId", StringType(), True)
     ])
     
     data = [
-        ("O001", "Widget", "10.50", "2", "2024-01-01", "C001"),
-        ("O002", "Gadget", "25.00", "1", "2024-01-02", "C002"),
-        ("O003", "Tool", "15.75", "3", "2024-01-03", "C003"),
-        ("O001", "Widget", "10.50", "2", "2024-01-01", "C001"),  # Duplicate
-        ("O004", "Null", "20.00", "1", "2024-01-04", "C004")  # Contains "Null"
+        ("O001", "Widget", 10.0, 2, "2024-01-01", "C001"),
+        ("O002", "Gadget", 20.0, 1, "2024-01-02", "C002"),
+        ("O003", "Tool", 15.0, 3, "2024-01-03", "C001"),
+        ("O004", "Null", 25.0, 1, "2024-01-04", "C003"),
+        ("O005", "Device", None, 2, "2024-01-05", "C004")
     ]
     
     return spark.createDataFrame(data, schema)
@@ -79,266 +75,289 @@ def sample_order_data(spark):
 class TestDataCleaner:
     """Test DataCleaner class"""
     
-    def test_remove_nulls_string_null(self, spark, sample_customer_data):
+    def test_remove_nulls_string_null(self, sample_customer_data):
         """Test removal of string 'Null' values"""
-        from src.main.job import DataCleaner
+        cleaned = DataCleaner.remove_nulls(sample_customer_data, "Null")
         
-        cleaner = DataCleaner()
-        result = cleaner.remove_nulls(sample_customer_data, "Null")
-        
-        # Should remove record with "Null" in Name and record with NULL
-        assert result.count() == 4
+        # Should remove row with "Null" in EmailId
+        assert cleaned.count() == 3
         
         # Verify no "Null" strings remain
-        null_records = result.filter(result.Name == "Null")
-        assert null_records.count() == 0
+        null_count = cleaned.filter(cleaned.EmailId == "Null").count()
+        assert null_count == 0
     
-    def test_remove_nulls_actual_null(self, spark, sample_customer_data):
+    def test_remove_nulls_actual_null(self, sample_customer_data):
         """Test removal of actual NULL values"""
-        from src.main.job import DataCleaner
+        cleaned = DataCleaner.remove_nulls(sample_customer_data, "Null")
         
-        cleaner = DataCleaner()
-        result = cleaner.remove_nulls(sample_customer_data, "Null")
+        # Should remove rows with NULL values
+        assert cleaned.count() == 3
         
         # Verify no NULL values remain
-        null_records = result.filter(result.Name.isNull())
-        assert null_records.count() == 0
+        for column in cleaned.columns:
+            null_count = cleaned.filter(cleaned[column].isNull()).count()
+            assert null_count == 0
     
-    def test_remove_duplicates(self, spark, sample_customer_data):
+    def test_remove_duplicates(self, sample_customer_data):
         """Test duplicate removal"""
-        from src.main.job import DataCleaner
-        
-        cleaner = DataCleaner()
         # First remove nulls to get clean data
-        no_nulls = cleaner.remove_nulls(sample_customer_data, "Null")
-        result = cleaner.remove_duplicates(no_nulls)
+        cleaned = DataCleaner.remove_nulls(sample_customer_data, "Null")
+        deduped = DataCleaner.remove_duplicates(cleaned)
         
-        # Should have 3 unique records (C001, C002, C003)
-        assert result.count() == 3
-        
-        # Verify C001 appears only once
-        c001_records = result.filter(result.CustId == "C001")
-        assert c001_records.count() == 1
+        # Should have 2 unique records after removing nulls and duplicates
+        assert deduped.count() == 2
 
 
-class TestS3Reader:
-    """Test S3Reader class"""
+class TestSCD2Processor:
+    """Test SCD2Processor class"""
     
-    def test_read_csv(self, mock_glue_context, spark, sample_customer_data):
-        """Test CSV reading from S3"""
-        from src.main.job import S3Reader
+    def test_add_scd2_columns(self, sample_customer_data):
+        """Test addition of SCD Type 2 columns"""
+        result = SCD2Processor.add_scd2_columns(sample_customer_data, is_active=True)
         
-        # Mock the Glue context's create_dynamic_frame method
-        mock_dynamic_frame = Mock()
-        mock_dynamic_frame.toDF.return_value = sample_customer_data
-        mock_glue_context.create_dynamic_frame.from_options.return_value = mock_dynamic_frame
-        
-        reader = S3Reader(mock_glue_context)
-        result = reader.read_csv("s3://test-bucket/data/", separator=",", with_header=True)
-        
-        # Verify DataFrame is returned
-        assert result is not None
-        assert result.count() == 6
-
-
-class TestS3Writer:
-    """Test S3Writer class"""
-    
-    def test_write_parquet(self, spark, sample_customer_data):
-        """Test Parquet write operation"""
-        from src.main.job import S3Writer
-        
-        writer = S3Writer(spark)
-        
-        # Mock the _write_parquet method
-        with patch.object(writer, '_write_parquet') as mock_write:
-            writer.write_dataframe(sample_customer_data, "s3://test/path", format_type="parquet")
-            mock_write.assert_called_once()
-    
-    def test_write_hudi(self, spark, sample_customer_data):
-        """Test Hudi write operation"""
-        from src.main.job import S3Writer
-        
-        writer = S3Writer(spark)
-        hudi_options = {'hoodie.table.name': 'test_table'}
-        
-        # Mock the _write_hudi method
-        with patch.object(writer, '_write_hudi') as mock_write:
-            writer.write_dataframe(
-                sample_customer_data,
-                "s3://test/path",
-                format_type="hudi",
-                hudi_options=hudi_options
-            )
-            mock_write.assert_called_once()
-
-
-class TestHudiManager:
-    """Test HudiManager class"""
-    
-    def test_apply_scd2_logic_initial_load(self, spark, sample_customer_data):
-        """Test SCD2 logic for initial load (no existing data)"""
-        from src.main.job import HudiManager
-        
-        manager = HudiManager(spark)
-        result = manager.apply_scd2_logic(sample_customer_data, None, ["CustId"])
-        
-        # Verify SCD2 metadata columns are added
+        # Verify new columns exist
         assert "IsActive" in result.columns
         assert "StartDate" in result.columns
         assert "EndDate" in result.columns
         assert "OpTs" in result.columns
         
-        # Verify all records are active
+        # Verify IsActive is True
         active_count = result.filter(result.IsActive == True).count()
         assert active_count == result.count()
+        
+        # Verify EndDate is NULL for active records
+        null_end_date = result.filter(result.EndDate.isNull()).count()
+        assert null_end_date == result.count()
     
-    def test_apply_scd2_logic_incremental(self, spark, sample_customer_data):
-        """Test SCD2 logic for incremental load"""
-        from src.main.job import HudiManager
-        
-        manager = HudiManager(spark)
-        
-        # Create mock existing data
-        existing_df = sample_customer_data.limit(2)
-        
-        result = manager.apply_scd2_logic(sample_customer_data, existing_df, ["CustId"])
-        
-        # Verify metadata columns exist
-        assert "IsActive" in result.columns
-        assert "OpTs" in result.columns
-
-
-class TestCustomerOrderETL:
-    """Test CustomerOrderETL class"""
-    
-    def test_clean_customer_data(self, mock_glue_context, spark, sample_customer_data):
-        """Test customer data cleaning pipeline"""
-        from src.main.job import CustomerOrderETL
-        
-        params = {
-            'null_string_value': 'Null',
-            'catalog_database': 'test_db'
-        }
-        
-        etl = CustomerOrderETL(mock_glue_context, spark, params)
-        result = etl.clean_customer_data(sample_customer_data)
-        
-        # Should have 3 clean records (removed duplicates and nulls)
-        assert result.count() == 3
-        
-        # Verify no nulls or "Null" strings
-        null_records = result.filter(
-            (result.Name == "Null") | (result.Name.isNull())
-        )
-        assert null_records.count() == 0
-    
-    def test_clean_order_data(self, mock_glue_context, spark, sample_order_data):
-        """Test order data cleaning pipeline"""
-        from src.main.job import CustomerOrderETL
-        
-        params = {
-            'null_string_value': 'Null',
-            'catalog_database': 'test_db'
-        }
-        
-        etl = CustomerOrderETL(mock_glue_context, spark, params)
-        result = etl.clean_order_data(sample_order_data)
-        
-        # Should have 3 clean records
-        assert result.count() == 3
-        
-        # Verify numeric columns are properly typed
-        assert dict(result.dtypes)['PricePerUnit'] == 'double'
-        assert dict(result.dtypes)['Qty'] == 'int'
-    
-    def test_log_record_count(self, mock_glue_context, spark, sample_customer_data):
-        """Test record count logging"""
-        from src.main.job import CustomerOrderETL
-        
-        params = {'catalog_database': 'test_db'}
-        etl = CustomerOrderETL(mock_glue_context, spark, params)
-        
-        count = etl.log_record_count(sample_customer_data, "Test stage")
-        
-        assert count == 6
-        etl.logger.info.assert_called()
-
-
-class TestIntegration:
-    """Integration tests for complete pipeline"""
-    
-    def test_end_to_end_cleaning(self, mock_glue_context, spark, sample_customer_data, sample_order_data):
-        """Test end-to-end data cleaning"""
-        from src.main.job import CustomerOrderETL
-        
-        params = {
-            'null_string_value': 'Null',
-            'catalog_database': 'test_db',
-            'customer_source_path': 's3://test/customer/',
-            'order_source_path': 's3://test/order/',
-            'csv_separator': ',',
-            'csv_header': 'True'
-        }
-        
-        etl = CustomerOrderETL(mock_glue_context, spark, params)
-        
-        # Clean both datasets
-        customer_clean = etl.clean_customer_data(sample_customer_data)
-        order_clean = etl.clean_order_data(sample_order_data)
-        
-        # Verify cleaning results
-        assert customer_clean.count() == 3
-        assert order_clean.count() == 3
-        
-        # Verify join would work
-        joined = customer_clean.join(order_clean, "CustId", "inner")
-        assert joined.count() == 3
-    
-    def test_aggregation_calculation(self, spark):
-        """Test customer aggregate spend calculation"""
-        from pyspark.sql.functions import sum as _sum
-        
-        # Create sample order summary data
-        schema = StructType([
+    def test_join_customer_order(self, spark):
+        """Test customer-order join"""
+        # Create clean test data
+        customer_data = [
+            ("C001", "John Doe", "john@example.com", "North"),
+            ("C002", "Jane Smith", "jane@example.com", "South")
+        ]
+        customer_schema = StructType([
+            StructField("CustId", StringType(), True),
             StructField("Name", StringType(), True),
+            StructField("EmailId", StringType(), True),
+            StructField("Region", StringType(), True)
+        ])
+        customer_df = spark.createDataFrame(customer_data, customer_schema)
+        
+        order_data = [
+            ("O001", "Widget", 10.0, 2, "2024-01-01", "C001"),
+            ("O002", "Gadget", 20.0, 1, "2024-01-02", "C002"),
+            ("O003", "Tool", 15.0, 3, "2024-01-03", "C001")
+        ]
+        order_schema = StructType([
+            StructField("OrderId", StringType(), True),
+            StructField("ItemName", StringType(), True),
             StructField("PricePerUnit", DoubleType(), True),
             StructField("Qty", IntegerType(), True),
             StructField("Date", StringType(), True),
-            StructField("IsActive", BooleanType(), True)
+            StructField("CustId", StringType(), True)
         ])
+        order_df = spark.createDataFrame(order_data, order_schema)
         
-        data = [
-            ("John Doe", 10.50, 2, "2024-01-01", True),
-            ("John Doe", 15.00, 1, "2024-01-01", True),
-            ("Jane Smith", 25.00, 1, "2024-01-02", True),
-            ("John Doe", 10.00, 1, "2024-01-01", False)  # Inactive record
+        joined = SCD2Processor.join_customer_order(customer_df, order_df)
+        
+        # Should have 3 joined records
+        assert joined.count() == 3
+        
+        # Verify all customer and order columns present
+        assert "Name" in joined.columns
+        assert "OrderId" in joined.columns
+        assert "CustId" in joined.columns
+
+
+class TestAggregationProcessor:
+    """Test AggregationProcessor class"""
+    
+    def test_calculate_customer_spend(self, spark):
+        """Test customer spend aggregation"""
+        # Create clean test data
+        customer_data = [
+            ("C001", "John Doe", "john@example.com", "North"),
+            ("C002", "Jane Smith", "jane@example.com", "South")
         ]
+        customer_schema = StructType([
+            StructField("CustId", StringType(), True),
+            StructField("Name", StringType(), True),
+            StructField("EmailId", StringType(), True),
+            StructField("Region", StringType(), True)
+        ])
+        customer_df = spark.createDataFrame(customer_data, customer_schema)
         
-        df = spark.createDataFrame(data, schema)
+        order_data = [
+            ("O001", "Widget", 10.0, 2, "2024-01-01", "C001"),  # 20.0
+            ("O002", "Gadget", 20.0, 1, "2024-01-02", "C002"),  # 20.0
+            ("O003", "Tool", 15.0, 3, "2024-01-01", "C001")     # 45.0
+        ]
+        order_schema = StructType([
+            StructField("OrderId", StringType(), True),
+            StructField("ItemName", StringType(), True),
+            StructField("PricePerUnit", DoubleType(), True),
+            StructField("Qty", IntegerType(), True),
+            StructField("Date", StringType(), True),
+            StructField("CustId", StringType(), True)
+        ])
+        order_df = spark.createDataFrame(order_data, order_schema)
         
-        # Filter active and calculate aggregate
-        active_df = df.filter(df.IsActive == True)
-        with_total = active_df.withColumn("TotalAmount", active_df.PricePerUnit * active_df.Qty)
-        agg_df = with_total.groupBy("Name", "Date").agg(_sum("TotalAmount").alias("TotalAmount"))
+        agg_df = AggregationProcessor.calculate_customer_spend(customer_df, order_df)
         
-        # Verify aggregation
+        # Should have 2 aggregate records (John on 2024-01-01, Jane on 2024-01-02)
         assert agg_df.count() == 2
         
-        # Verify John Doe's total for 2024-01-01 is 36.00 (10.50*2 + 15.00*1)
+        # Verify columns
+        assert "Name" in agg_df.columns
+        assert "TotalAmount" in agg_df.columns
+        assert "Date" in agg_df.columns
+        
+        # Verify John's total for 2024-01-01 is 65.0 (20 + 45)
         john_total = agg_df.filter(
             (agg_df.Name == "John Doe") & (agg_df.Date == "2024-01-01")
-        ).collect()[0]["TotalAmount"]
-        assert john_total == 36.00
+        ).select("TotalAmount").collect()[0][0]
+        assert john_total == 65.0
 
 
-def test_get_job_parameters():
-    """Test job parameter retrieval with defaults"""
-    from src.main.job import get_job_parameters
+class TestS3Writer:
+    """Test S3Writer class"""
     
-    params = get_job_parameters()
+    def test_write_parquet(self, spark, tmp_path):
+        """Test Parquet write functionality"""
+        mock_glue_context = Mock()
+        writer = S3Writer(spark, mock_glue_context)
+        
+        # Create test data
+        data = [("C001", "John Doe"), ("C002", "Jane Smith")]
+        schema = StructType([
+            StructField("CustId", StringType(), True),
+            StructField("Name", StringType(), True)
+        ])
+        df = spark.createDataFrame(data, schema)
+        
+        # Write to temp path
+        output_path = str(tmp_path / "test_output")
+        writer._write_parquet(df, output_path, mode="overwrite")
+        
+        # Verify file was written
+        assert os.path.exists(output_path)
+        
+        # Read back and verify
+        result_df = spark.read.parquet(output_path)
+        assert result_df.count() == 2
     
-    # Verify default parameters are set
-    assert params['catalog_database'] == 'gen_ai_poc_databrickscoe'
-    assert params['null_string_value'] == 'Null'
-    assert params['hudi_table_type'] == 'COPY_ON_WRITE'
+    def test_write_dataframe_dispatch(self, spark, tmp_path):
+        """Test write_dataframe format dispatch"""
+        mock_glue_context = Mock()
+        writer = S3Writer(spark, mock_glue_context)
+        
+        data = [("C001", "John Doe")]
+        schema = StructType([
+            StructField("CustId", StringType(), True),
+            StructField("Name", StringType(), True)
+        ])
+        df = spark.createDataFrame(data, schema)
+        
+        output_path = str(tmp_path / "test_dispatch")
+        
+        # Test parquet dispatch
+        writer.write_dataframe(df, output_path, format_type="parquet")
+        assert os.path.exists(output_path)
+        
+        # Test invalid format
+        with pytest.raises(ValueError, match="Unsupported format"):
+            writer.write_dataframe(df, output_path, format_type="invalid")
+
+
+class TestS3Reader:
+    """Test S3Reader class"""
+    
+    def test_read_csv(self, spark, tmp_path):
+        """Test CSV read functionality"""
+        mock_glue_context = Mock()
+        reader = S3Reader(spark, mock_glue_context)
+        
+        # Create test CSV file
+        csv_path = tmp_path / "test.csv"
+        csv_content = "CustId,Name\nC001,John Doe\nC002,Jane Smith"
+        csv_path.write_text(csv_content)
+        
+        # Read CSV
+        df = reader.read_csv(str(tmp_path / "*.csv"), header=True, infer_schema=True)
+        
+        # Verify data
+        assert df.count() == 2
+        assert "CustId" in df.columns
+        assert "Name" in df.columns
+
+
+class TestIntegration:
+    """Integration tests for complete workflow"""
+    
+    def test_end_to_end_cleaning_workflow(self, sample_customer_data, sample_order_data):
+        """Test complete data cleaning workflow"""
+        # Clean customer data
+        customer_clean = DataCleaner.remove_nulls(sample_customer_data, "Null")
+        customer_clean = DataCleaner.remove_duplicates(customer_clean)
+        
+        # Clean order data
+        order_clean = DataCleaner.remove_nulls(sample_order_data, "Null")
+        order_clean = DataCleaner.remove_duplicates(order_clean)
+        
+        # Verify cleaning results
+        assert customer_clean.count() == 2  # 2 valid unique customers
+        assert order_clean.count() == 2     # 2 valid unique orders
+        
+        # Verify no nulls remain
+        for column in customer_clean.columns:
+            assert customer_clean.filter(customer_clean[column].isNull()).count() == 0
+        
+        for column in order_clean.columns:
+            assert order_clean.filter(order_clean[column].isNull()).count() == 0
+    
+    def test_scd2_workflow(self, spark):
+        """Test SCD Type 2 workflow"""
+        # Create clean test data
+        customer_data = [("C001", "John Doe", "john@example.com", "North")]
+        customer_schema = StructType([
+            StructField("CustId", StringType(), True),
+            StructField("Name", StringType(), True),
+            StructField("EmailId", StringType(), True),
+            StructField("Region", StringType(), True)
+        ])
+        customer_df = spark.createDataFrame(customer_data, customer_schema)
+        
+        order_data = [("O001", "Widget", 10.0, 2, "2024-01-01", "C001")]
+        order_schema = StructType([
+            StructField("OrderId", StringType(), True),
+            StructField("ItemName", StringType(), True),
+            StructField("PricePerUnit", DoubleType(), True),
+            StructField("Qty", IntegerType(), True),
+            StructField("Date", StringType(), True),
+            StructField("CustId", StringType(), True)
+        ])
+        order_df = spark.createDataFrame(order_data, order_schema)
+        
+        # Join and add SCD2 columns
+        joined = SCD2Processor.join_customer_order(customer_df, order_df)
+        scd2_df = SCD2Processor.add_scd2_columns(joined, is_active=True)
+        
+        # Verify SCD2 structure
+        assert scd2_df.count() == 1
+        assert "IsActive" in scd2_df.columns
+        assert "StartDate" in scd2_df.columns
+        assert "EndDate" in scd2_df.columns
+        assert "OpTs" in scd2_df.columns
+        
+        # Verify active record
+        active_records = scd2_df.filter(scd2_df.IsActive == True)
+        assert active_records.count() == 1
+        
+        # Verify EndDate is NULL for active record
+        null_end_dates = scd2_df.filter(scd2_df.EndDate.isNull())
+        assert null_end_dates.count() == 1
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

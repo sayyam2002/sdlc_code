@@ -1,5 +1,5 @@
 """
-AWS Glue ETL Pipeline - Customer Order Processing
+AWS Glue ETL Pipeline - Use Case 1
 Main package initialization
 """
 
