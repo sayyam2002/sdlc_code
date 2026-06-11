@@ -1,0 +1,49 @@
+# AWS Glue Job Parameters Configuration
+
+# Source Paths
+source_customer_path: "s3://adif-sdlc/sdlc_wizard/customerdata/"
+source_order_path: "s3://adif-sdlc/sdlc_wizard/orderdata/"
+
+# Target Paths
+target_ordersummary_path: "s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
+target_customeraggregate_path: "s3://adif-sdlc/analytics/customeraggregatespend/"
+target_customer_path: "s3://adif-sdlc/curated/sdlc_wizard/customer/"
+target_order_path: "s3://adif-sdlc/curated/sdlc_wizard/order/"
+
+# Glue Data Catalog
+catalog_database: "gen_ai_poc_databrickscoe"
+catalog_table_customer: "sdlc_wizard_customer"
+catalog_table_order: "sdlc_wizard_order"
+catalog_table_ordersummary: "ordersummary"
+catalog_table_customeraggregate: "customeraggregatespend"
+
+# CSV Reading Options
+csv_header: true
+csv_infer_schema: true
+csv_delimiter: ","
+
+# Data Quality
+null_string_value: "Null"
+log_removed_records: true
+log_duplicate_count: true
+
+# Hudi Configuration
+hudi_table_type: "COPY_ON_WRITE"
+hudi_record_key: "OrderId,CustId"
+hudi_precombine_key: "OpTs"
+hudi_partition_path: ""
+hudi_table_name_ordersummary: "ordersummary"
+
+# Write Modes
+customer_write_mode: "overwrite"
+order_write_mode: "overwrite"
+customeraggregate_write_mode: "overwrite"
+
+# File Formats
+customer_format: "parquet"
+order_format: "parquet"
+customeraggregate_format: "parquet"
+
+# Processing Options
+enable_incremental_processing: true
+enable_catalog_registration: true

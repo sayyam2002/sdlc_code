@@ -1,0 +1,1070 @@
+# TECHNICAL REQUIREMENTS DOCUMENT (TRD)
+
+## 1. Document Overview
+
+### 1.1 Purpose
+This Technical Requirements Document (TRD) translates the Functional Requirements Document (FRD) into detailed technical specifications for implementing an AWS Glue-based data processing pipeline. This document provides implementation-ready technical design for ingesting customer and order data from S3, performing data quality operations, implementing SCD Type 2 logic using Apache Hudi, and generating aggregated analytics tables.
+
+### 1.2 Scope
+This TRD covers the technical implementation of:
+- AWS Glue ETL jobs for reading CSV files from S3 source locations
+- Data quality transformations including null removal and deduplication using PySpark
+- AWS Glue Data Catalog table registration for all processed datasets
+- SCD Type 2 implementation using Apache Hudi framework for order summary table
+- Incremental processing logic for customer update detection and propagation
+- Aggregation logic for customer spend analytics
+- Error handling, validation rules, and operational parameters for AWS Glue execution
+- Schema definitions and ETL mappings for all data flows
+
+### 1.3 Source Document Reference
+- **Source FRD**: Functional Requirements Document - Use Case 1
+- **Source BRD**: Business Requirement Document – AWS Version
+- **S3 Path**: s3://adif-sdlc/brd_usecase1/BusinessRequirementDocument_usecase1.pdf
+
+---
+
+## 2. Technical Requirements
+
+### **TR-INGEST-001: Implement Customer Data Ingestion from S3**
+- **FR Reference**: FR-INGEST-001
+- **Objective**: Read customer CSV files from S3 source location and load into Spark DataFrame for downstream processing
+- **Source Details**: 
+  - Source Path: `s3://adif-sdlc/sdlc_wizard/customerdata/`
+  - Source Format: CSV
+  - Source Type: Raw files
+- **Target Details**: In-memory Spark DataFrame (intermediate processing object)
+- **Schema**: 
+  ```
+  CustId: String (inferred from CSV)
+  Name: String (inferred from CSV)
+  EmailId: String (inferred from CSV)
+  Region: String (inferred from CSV)
+  ```
+  Note: Data types not specified in FRD; String type assumed for CSV ingestion
+- **Transformation Logic**:
+  - Use Spark CSV reader with header=true option
+  - Read all CSV files matching pattern in source path using wildcard or recursive read
+  - Parse header row containing: CustId, Name, EmailId, Region
+  - Load into DataFrame with schema inference or explicit schema definition
+  - No transformations applied at ingestion stage
+- **Validation Rules**:
+  - Verify source path exists and is accessible
+  - Verify CSV files contain header row with expected column names: CustId, Name, EmailId, Region
+  - Verify at least one CSV file exists in source location
+  - Validate CSV structure is parseable by Spark CSV reader
+- **Error Handling**:
+  - If source path does not exist: Raise exception and fail job with error message "Source path not found: s3://adif-sdlc/sdlc_wizard/customerdata/"
+  - If CSV files are malformed: Log malformed records to CloudWatch and raise exception with details
+  - If required columns are missing: Raise exception with error message "Schema mismatch: Expected columns [CustId, Name, EmailId, Region]"
+  - If no files found in source path: Raise exception "No CSV files found in source location"
+- **Runtime Parameters**:
+  - `source_customer_path`: s3://adif-sdlc/sdlc_wizard/customerdata/
+  - `csv_header`: true
+  - `csv_inferSchema`: true (or explicit schema definition)
+  - `csv_delimiter`: , (comma - standard CSV)
+- **Operational Notes**:
+  - Ensure Glue job IAM role has s3:GetObject permission on source bucket
+  - Monitor CloudWatch logs for read errors or schema mismatches
+  - Consider enabling Glue job bookmark if incremental file processing is required (not specified in FRD)
+
+---
+
+### **TR-INGEST-002: Implement Order Data Ingestion from S3**
+- **FR Reference**: FR-INGEST-002
+- **Objective**: Read order CSV files from S3 source location and load into Spark DataFrame for downstream processing
+- **Source Details**: 
+  - Source Path: `s3://adif-sdlc/sdlc_wizard/orderdata/`
+  - Source Format: CSV
+  - Source Type: Raw files
+- **Target Details**: In-memory Spark DataFrame (intermediate processing object)
+- **Schema**: 
+  ```
+  OrderId: String (inferred from CSV)
+  ItemName: String (inferred from CSV)
+  PricePerUnit: String (inferred from CSV, will require casting for calculations)
+  Qty: String (inferred from CSV, will require casting for calculations)
+  Date: String (inferred from CSV, format not specified in FRD)
+  CustId: String (inferred from CSV)
+  ```
+  Note: Data types not specified in FRD; String type assumed for CSV ingestion
+- **Transformation Logic**:
+  - Use Spark CSV reader with header=true option
+  - Read all CSV files matching pattern in source path using wildcard or recursive read
+  - Parse header row containing: OrderId, ItemName, PricePerUnit, Qty, Date, CustId
+  - Load into DataFrame with schema inference or explicit schema definition
+  - No transformations applied at ingestion stage
+- **Validation Rules**:
+  - Verify source path exists and is accessible
+  - Verify CSV files contain header row with expected column names: OrderId, ItemName, PricePerUnit, Qty, Date, CustId
+  - Verify at least one CSV file exists in source location
+  - Validate CSV structure is parseable by Spark CSV reader
+- **Error Handling**:
+  - If source path does not exist: Raise exception and fail job with error message "Source path not found: s3://adif-sdlc/sdlc_wizard/orderdata/"
+  - If CSV files are malformed: Log malformed records to CloudWatch and raise exception with details
+  - If required columns are missing: Raise exception with error message "Schema mismatch: Expected columns [OrderId, ItemName, PricePerUnit, Qty, Date, CustId]"
+  - If no files found in source path: Raise exception "No CSV files found in source location"
+- **Runtime Parameters**:
+  - `source_order_path`: s3://adif-sdlc/sdlc_wizard/orderdata/
+  - `csv_header`: true
+  - `csv_inferSchema`: true (or explicit schema definition)
+  - `csv_delimiter`: , (comma - standard CSV)
+- **Operational Notes**:
+  - Ensure Glue job IAM role has s3:GetObject permission on source bucket
+  - Monitor CloudWatch logs for read errors or schema mismatches
+  - Consider enabling Glue job bookmark if incremental file processing is required (not specified in FRD)
+
+---
+
+### **TR-CLEAN-001: Implement Null Value Removal Transformation**
+- **FR Reference**: FR-CLEAN-001
+- **Objective**: Remove records containing string "Null" or actual NULL values from customer and order DataFrames
+- **Source Details**: 
+  - Customer DataFrame from TR-INGEST-001 (in-memory)
+  - Order DataFrame from TR-INGEST-002 (in-memory)
+- **Target Details**: 
+  - Cleaned Customer DataFrame (in-memory)
+  - Cleaned Order DataFrame (in-memory)
+- **Schema**: 
+  - Customer: CustId, Name, EmailId, Region (unchanged from source)
+  - Order: OrderId, ItemName, PricePerUnit, Qty, Date, CustId (unchanged from source)
+- **Transformation Logic**:
+  - For Customer DataFrame:
+    - Filter out rows where any column contains string value "Null" (case-sensitive match)
+    - Filter out rows where any column contains actual NULL value (isNull() check)
+    - Apply filter conditions: `(col("CustId") != "Null") & (col("Name") != "Null") & (col("EmailId") != "Null") & (col("Region") != "Null")`
+    - Apply null check: `col("CustId").isNotNull() & col("Name").isNotNull() & col("EmailId").isNotNull() & col("Region").isNotNull()`
+  - For Order DataFrame:
+    - Filter out rows where any column contains string value "Null" (case-sensitive match)
+    - Filter out rows where any column contains actual NULL value (isNull() check)
+    - Apply filter conditions: `(col("OrderId") != "Null") & (col("ItemName") != "Null") & (col("PricePerUnit") != "Null") & (col("Qty") != "Null") & (col("Date") != "Null") & (col("CustId") != "Null")`
+    - Apply null check: `col("OrderId").isNotNull() & col("ItemName").isNotNull() & col("PricePerUnit").isNotNull() & col("Qty").isNotNull() & col("Date").isNotNull() & col("CustId").isNotNull()`
+  - Process each DataFrame independently
+- **Validation Rules**:
+  - Verify input DataFrames are not empty before applying filters
+  - Log count of records removed due to "Null" string values
+  - Log count of records removed due to NULL values
+  - Verify output DataFrames contain no "Null" strings or NULL values in any column
+- **Error Handling**:
+  - If input DataFrame is empty: Log warning to CloudWatch and proceed with empty DataFrame
+  - If all records are filtered out: Log warning "All records removed during null cleaning" and proceed with empty DataFrame
+  - Error handling not specified in FRD for other scenarios
+- **Runtime Parameters**:
+  - `null_string_value`: "Null" (case-sensitive)
+  - `log_removed_records`: true (for monitoring)
+- **Operational Notes**:
+  - Monitor CloudWatch metrics for percentage of records removed
+  - High removal rates may indicate data quality issues in source systems
+  - Consider implementing data quality alerts if removal rate exceeds threshold (not specified in FRD)
+
+---
+
+### **TR-CLEAN-002: Implement Deduplication Transformation**
+- **FR Reference**: FR-CLEAN-002
+- **Objective**: Remove duplicate records from customer and order DataFrames independently
+- **Source Details**: 
+  - Customer DataFrame after null removal from TR-CLEAN-001 (in-memory)
+  - Order DataFrame after null removal from TR-CLEAN-001 (in-memory)
+- **Target Details**: 
+  - Deduplicated Customer DataFrame (in-memory)
+  - Deduplicated Order DataFrame (in-memory)
+- **Schema**: 
+  - Customer: CustId, Name, EmailId, Region (unchanged from source)
+  - Order: OrderId, ItemName, PricePerUnit, Qty, Date, CustId (unchanged from source)
+- **Transformation Logic**:
+  - For Customer DataFrame:
+    - Apply Spark `dropDuplicates()` function on all columns
+    - Retain first occurrence of duplicate record (Spark default behavior)
+    - Deduplication based on exact match across all columns: CustId, Name, EmailId, Region
+  - For Order DataFrame:
+    - Apply Spark `dropDuplicates()` function on all columns
+    - Retain first occurrence of duplicate record (Spark default behavior)
+    - Deduplication based on exact match across all columns: OrderId, ItemName, PricePerUnit, Qty, Date, CustId
+  - Process each DataFrame independently
+- **Validation Rules**:
+  - Verify input DataFrames are not empty before applying deduplication
+  - Log count of duplicate records removed from each DataFrame
+  - Verify output DataFrames contain only unique records
+  - Validate record count: output_count <= input_count
+- **Error Handling**:
+  - If input DataFrame is empty: Log warning to CloudWatch and proceed with empty DataFrame
+  - Error handling not specified in FRD for other scenarios
+- **Runtime Parameters**:
+  - `dedup_all_columns`: true
+  - `log_duplicate_count`: true (for monitoring)
+- **Operational Notes**:
+  - Monitor CloudWatch metrics for percentage of duplicates removed
+  - High duplicate rates may indicate data quality issues in source systems
+  - Deduplication logic does not specify primary key-based deduplication; uses all columns as specified in FRD
+  - Consider implementing data quality alerts if duplicate rate exceeds threshold (not specified in FRD)
+
+---
+
+### **TR-CATALOG-001: Implement Glue Data Catalog Registration for Customer Table**
+- **FR Reference**: FR-CATALOG-001
+- **Objective**: Register cleaned and deduplicated customer data as a table in AWS Glue Data Catalog
+- **Source Details**: 
+  - Deduplicated Customer DataFrame from TR-CLEAN-002 (in-memory)
+- **Target Details**: 
+  - Database: gen_ai_poc_databrickscoe
+  - Table Name: sdlc_wizard_customer
+  - Storage Location: Not specified in FRD (assume S3 location required for catalog registration)
+  - Storage Format: Not specified in FRD
+- **Schema**: 
+  ```
+  CustId: String
+  Name: String
+  EmailId: String
+  Region: String
+  ```
+  Note: Data types not specified in FRD; String type assumed
+- **Transformation Logic**:
+  - Write deduplicated Customer DataFrame to S3 location (location not specified in FRD)
+  - Register table in Glue Data Catalog using Glue DynamicFrame or Spark catalog integration
+  - Create or update table definition with schema: CustId, Name, EmailId, Region
+  - Enable table for Athena querying
+  - Set database to: gen_ai_poc_databrickscoe
+  - Set table name to: sdlc_wizard_customer
+- **Validation Rules**:
+  - Verify database gen_ai_poc_databrickscoe exists in Glue Data Catalog before registration
+  - Verify table schema matches expected columns
+  - Verify table is queryable via Athena after registration
+  - Validate IAM permissions for catalog write operations
+- **Error Handling**:
+  - If database does not exist: Raise exception "Database gen_ai_poc_databrickscoe not found in Glue Data Catalog"
+  - If insufficient permissions: Raise exception with IAM permission error details
+  - If table registration fails: Log error to CloudWatch and raise exception
+  - If S3 write fails: Raise exception with S3 error details
+- **Runtime Parameters**:
+  - `catalog_database`: gen_ai_poc_databrickscoe
+  - `catalog_table_customer`: sdlc_wizard_customer
+  - `customer_storage_location`: Not specified in FRD
+  - `customer_storage_format`: Not specified in FRD
+- **Operational Notes**:
+  - Ensure Glue job IAM role has glue:CreateTable and glue:UpdateTable permissions
+  - Ensure Glue job IAM role has s3:PutObject permission on target S3 location
+  - Storage location and format not specified in FRD; implementation decision required
+  - Consider partitioning strategy for large datasets (not specified in FRD)
+
+---
+
+### **TR-CATALOG-002: Implement Glue Data Catalog Registration for Order Table**
+- **FR Reference**: FR-CATALOG-001
+- **Objective**: Register cleaned and deduplicated order data as a table in AWS Glue Data Catalog
+- **Source Details**: 
+  - Deduplicated Order DataFrame from TR-CLEAN-002 (in-memory)
+- **Target Details**: 
+  - Database: gen_ai_poc_databrickscoe
+  - Table Name: sdlc_wizard_order
+  - Storage Location: Not specified in FRD (assume S3 location required for catalog registration)
+  - Storage Format: Not specified in FRD
+- **Schema**: 
+  ```
+  OrderId: String
+  ItemName: String
+  PricePerUnit: String (or numeric type for calculations)
+  Qty: String (or numeric type for calculations)
+  Date: String (or date type)
+  CustId: String
+  ```
+  Note: Data types not specified in FRD; String type assumed for ingestion, may require casting
+- **Transformation Logic**:
+  - Write deduplicated Order DataFrame to S3 location (location not specified in FRD)
+  - Register table in Glue Data Catalog using Glue DynamicFrame or Spark catalog integration
+  - Create or update table definition with schema: OrderId, ItemName, PricePerUnit, Qty, Date, CustId
+  - Enable table for Athena querying
+  - Set database to: gen_ai_poc_databrickscoe
+  - Set table name to: sdlc_wizard_order
+- **Validation Rules**:
+  - Verify database gen_ai_poc_databrickscoe exists in Glue Data Catalog before registration
+  - Verify table schema matches expected columns
+  - Verify table is queryable via Athena after registration
+  - Validate IAM permissions for catalog write operations
+- **Error Handling**:
+  - If database does not exist: Raise exception "Database gen_ai_poc_databrickscoe not found in Glue Data Catalog"
+  - If insufficient permissions: Raise exception with IAM permission error details
+  - If table registration fails: Log error to CloudWatch and raise exception
+  - If S3 write fails: Raise exception with S3 error details
+- **Runtime Parameters**:
+  - `catalog_database`: gen_ai_poc_databrickscoe
+  - `catalog_table_order`: sdlc_wizard_order
+  - `order_storage_location`: Not specified in FRD
+  - `order_storage_format`: Not specified in FRD
+- **Operational Notes**:
+  - Ensure Glue job IAM role has glue:CreateTable and glue:UpdateTable permissions
+  - Ensure Glue job IAM role has s3:PutObject permission on target S3 location
+  - Storage location and format not specified in FRD; implementation decision required
+  - Consider partitioning strategy for large datasets (not specified in FRD)
+
+---
+
+### **TR-SCD2-001: Implement SCD Type 2 Logic for Order Summary Table**
+- **FR Reference**: FR-SCD2-001
+- **Objective**: Implement Slowly Changing Dimension Type 2 logic for ordersummary table using Apache Hudi format, maintaining historical records with versioning
+- **Source Details**: 
+  - Cleaned Customer DataFrame from TR-CLEAN-002: CustId, Name, EmailId, Region
+  - Cleaned Order DataFrame from TR-CLEAN-002: OrderId, ItemName, PricePerUnit, Qty, Date, CustId
+  - Existing ordersummary Hudi table (for incremental updates): s3://adif-sdlc/curated/sdlc_wizard/ordersummary/
+- **Target Details**: 
+  - Table Name: ordersummary
+  - Database: gen_ai_poc_databrickscoe
+  - Storage Location: s3://adif-sdlc/curated/sdlc_wizard/ordersummary/
+  - Storage Format: Apache Hudi
+- **Schema**: 
+  ```
+  # Joined fields from Customer and Order (exact schema from join not fully specified in FRD)
+  OrderId: String
+  ItemName: String
+  PricePerUnit: String (or numeric type)
+  Qty: String (or numeric type)
+  Date: String (or date type)
+  CustId: String
+  Name: String
+  EmailId: String
+  Region: String
+  
+  # SCD Type 2 metadata columns
+  IsActive: Boolean
+  StartDate: Timestamp (or date type, format not specified in FRD)
+  EndDate: Timestamp (or date type, format not specified in FRD, null for active records)
+  OpTs: Timestamp (operation timestamp, format not specified in FRD)
+  ```
+  Note: Exact data types not specified in FRD; assumptions made based on typical SCD2 implementation
+- **Transformation Logic**:
+  - **Step 1: Join Customer and Order DataFrames**
+    - Perform inner join on CustId: `customer_df.join(order_df, "CustId", "inner")`
+    - Result contains all columns from both DataFrames
+  - **Step 2: Read Existing Hudi Table (if exists)**
+    - Read existing ordersummary table from s3://adif-sdlc/curated/sdlc_wizard/ordersummary/
+    - If table does not exist (first run), treat all joined records as new inserts
+  - **Step 3: Detect Changes**
+    - Compare joined records with existing ordersummary records (where IsActive = true)
+    - Identify new records: Records in joined data not present in existing active records
+    - Identify changed records: Records where any business attribute (Name, EmailId, Region, OrderId, ItemName, PricePerUnit, Qty, Date) has changed
+    - Identify unchanged records: Records with no changes
+    - Change detection logic: Compare on all business columns excluding SCD2 metadata columns
+  - **Step 4: Process New Records**
+    - For new records:
+      - Set IsActive = true
+      - Set StartDate = current timestamp
+      - Set EndDate = null
+      - Set OpTs = current timestamp
+      - Insert into ordersummary table
+  - **Step 5: Process Changed Records**
+    - For changed records:
+      - **Close previous row:**
+        - Update existing active record: Set IsActive = false
+        - Set EndDate = current timestamp
+        - Update OpTs = current timestamp
+      - **Insert new active row:**
+        - Insert new record with updated values
+        - Set IsActive = true
+        - Set StartDate = current timestamp
+        - Set EndDate = null
+        - Set OpTs = current timestamp
+  - **Step 6: Process Unchanged Records**
+    - No action required for unchanged records
+  - **Step 7: Write to Hudi Table**
+    - Use Hudi upsert operation to write changes
+    - Configure Hudi with appropriate record key, precombine key, and partition key (not specified in FRD)
+    - Write to s3://adif-sdlc/curated/sdlc_wizard/ordersummary/
+    - Register or update table in Glue Data Catalog
+- **Validation Rules**:
+  - Verify join produces valid results (no null CustId values)
+  - Verify all active records have IsActive = true and EndDate = null
+  - Verify all closed records have IsActive = false and EndDate is not null
+  - Verify no duplicate active records for same business key
+  - Validate Hudi write completes successfully with ACID guarantees
+  - Verify table is registered in Glue Data Catalog after write
+- **Error Handling**:
+  - If join fails due to missing CustId references: Log error to CloudWatch with details of orphaned records
+  - If Hudi write fails: Raise exception and fail job to maintain data consistency
+  - If S3 write permission issues: Raise exception with IAM permission error details
+  - If change detection logic fails: Log error and raise exception
+  - If catalog registration fails: Log warning but do not fail job (data is written)
+- **Runtime Parameters**:
+  - `ordersummary_target_path`: s3://adif-sdlc/curated/sdlc_wizard/ordersummary/
+  - `ordersummary_table_name`: ordersummary
+  - `ordersummary_database`: gen_ai_poc_databrickscoe
+  - `hudi_table_type`: Not specified in FRD (COW or MOR)
+  - `hudi_record_key`: Not specified in FRD (likely OrderId or composite key)
+  - `hudi_precombine_key`: OpTs (for Hudi deduplication)
+  - `hudi_partition_key`: Not specified in FRD
+  - `current_timestamp_function`: current_timestamp() or equivalent
+- **Operational Notes**:
+  - Ensure Glue job has Hudi libraries available (AWS Glue 2.0+ includes Hudi support)
+  - Ensure IAM role has s3:PutObject, s3:GetObject, s3:DeleteObject permissions on target location
+  - Monitor CloudWatch for Hudi write performance and errors
+  - Hudi configuration details (table type, record key, partition key) not specified in FRD; implementation decisions required
+  - Consider Hudi compaction and cleaning strategies for long-term maintenance (not specified in FRD)
+  - Date format for StartDate, EndDate, OpTs not specified in FRD; use ISO 8601 timestamp format
+
+---
+
+### **TR-SCD2-002: Implement Incremental Customer Update Processing**
+- **FR Reference**: FR-SCD2-002
+- **Objective**: Detect customer updates and trigger corresponding SCD Type 2 updates in ordersummary table
+- **Source Details**: 
+  - New/Updated Customer records from s3://adif-sdlc/sdlc_wizard/customerdata/ (incremental files)
+  - Existing ordersummary Hudi table: s3://adif-sdlc/curated/sdlc_wizard/ordersummary/
+- **Target Details**: 
+  - Table Name: ordersummary
+  - Database: gen_ai_poc_databrickscoe
+  - Storage Location: s3://adif-sdlc/curated/sdlc_wizard/ordersummary/
+  - Storage Format: Apache Hudi
+- **Schema**: Same as TR-SCD2-001 ordersummary schema
+- **Transformation Logic**:
+  - **Step 1: Identify Changed Customers**
+    - Read new/updated customer records from source
+    - Compare with previous customer state (mechanism not specified in FRD)
+    - Identify customers where Name, EmailId, or Region has changed
+    - Extract list of changed CustId values
+  - **Step 2: Identify Affected Order Summary Records**
+    - Read existing ordersummary table
+    - Filter for records where CustId matches changed customer CustId list
+    - Filter for IsActive = true records only
+  - **Step 3: Apply SCD2 Update Logic**
+    - For each affected ordersummary record:
+      - **Close current active record:**
+        - Set IsActive = false
+        - Set EndDate = current timestamp
+        - Update OpTs = current timestamp
+      - **Insert new active record:**
+        - Copy all order fields (OrderId, ItemName, PricePerUnit, Qty, Date)
+        - Update customer fields (Name, EmailId, Region) with new values from changed customer record
+        - Set IsActive = true
+        - Set StartDate = current timestamp
+        - Set EndDate = null
+        - Set OpTs = current timestamp
+  - **Step 4: Write Updates to Hudi Table**
+    - Use Hudi upsert operation to apply changes
+    - Maintain ACID compliance
+    - Process updates incrementally without full table reload
+- **Validation Rules**:
+  - Verify customer change detection logic correctly identifies changed records
+  - Verify all affected ordersummary records are identified
+  - Verify SCD2 logic correctly closes old records and inserts new active records
+  - Verify no active records are orphaned or duplicated
+  - Validate incremental processing does not affect unchanged records
+- **Error Handling**:
+  - If unable to identify changed customer records: Log error to CloudWatch and raise exception
+  - If incremental update process fails: Raise exception and fail job to maintain consistency
+  - If Hudi write fails: Raise exception with error details
+  - If no changed customers detected: Log info message and complete job successfully (no updates needed)
+- **Runtime Parameters**:
+  - `ordersummary_target_path`: s3://adif-sdlc/curated/sdlc_wizard/ordersummary/
+  - `customer_source_path`: s3://adif-sdlc/sdlc_wizard/customerdata/
+  - `incremental_processing_enabled`: true
+  - `customer_change_detection_method`: Not specified in FRD
+  - `current_timestamp_function`: current_timestamp() or equivalent
+- **Operational Notes**:
+  - Customer change detection mechanism not specified in FRD (e.g., CDC, timestamp comparison, full comparison)
+  - Consider implementing Glue job bookmarks for incremental file processing
+  - Monitor CloudWatch for incremental processing performance
+  - Ensure IAM permissions for reading source and writing to target
+  - Consider implementing customer state tracking table for change detection (not specified in FRD)
+
+---
+
+### **TR-AGG-001: Implement Customer Aggregate Spend Table Generation**
+- **FR Reference**: FR-AGG-001
+- **Objective**: Generate aggregated analytics table containing total spend per customer per date
+- **Source Details**: 
+  - ordersummary Hudi table: s3://adif-sdlc/curated/sdlc_wizard/ordersummary/
+  - Filter: IsActive = true records only
+- **Target Details**: 
+  - Table Name: customeraggregatespend
+  - Database: gen_ai_poc_databrickscoe
+  - Storage Location: s3://adif-sdlc/analytics/customeraggregatespend/
+  - Storage Format: Not specified in FRD
+- **Schema**: 
+  ```
+  Name: String
+  TotalAmount: Numeric (calculated field, exact type not specified in FRD)
+  Date: String (or date type, format not specified in FRD)
+  ```
+- **Transformation Logic**:
+  - **Step 1: Read Active Order Summary Records**
+    - Read ordersummary table from s3://adif-sdlc/curated/sdlc_wizard/ordersummary/
+    - Filter for IsActive = true records: `ordersummary_df.filter(col("IsActive") == true)`
+  - **Step 2: Calculate TotalAmount**
+    - For each record, calculate: TotalAmount = PricePerUnit * Qty
+    - Cast PricePerUnit and Qty to numeric types if stored as strings
+    - Add calculated column: `withColumn("TotalAmount", col("PricePerUnit") * col("Qty"))`
+  - **Step 3: Group and Aggregate**
+    - Group by customer Name and Date
+    - Sum TotalAmount for each Name-Date combination
+    - Aggregation logic: `groupBy("Name", "Date").agg(sum("TotalAmount").alias("TotalAmount"))`
+  - **Step 4: Write to Target Location**
+    - Write aggregated results to s3://adif-sdlc/analytics/customeraggregatespend/
+    - Format not specified in FRD (assume Parquet or CSV)
+    - Overwrite or append mode not specified in FRD
+  - **Step 5: Register in Glue Data Catalog**
+    - Register customeraggregatespend table in database gen_ai_poc_databrickscoe
+    - Enable for Athena querying
+- **Validation Rules**:
+  - Verify ordersummary table exists and contains active records
+  - Verify PricePerUnit and Qty are valid numeric values (not null, not negative)
+  - Verify TotalAmount calculation produces valid results
+  - Verify aggregation produces expected record count
+  - Verify no null values in Name or Date columns after aggregation
+  - Validate table is queryable via Athena after registration
+- **Error Handling**:
+  - If ordersummary table does not exist: Raise exception "ordersummary table not found"
+  - If no active records found: Log warning and create empty customeraggregatespend table
+  - If aggregation calculation errors occur: Log error details to CloudWatch and raise exception
+  - If S3 write fails: Raise exception with S3 error details
+  - If missing or invalid PricePerUnit or Qty values: Log warning with record details and exclude from aggregation
+- **Runtime Parameters**:
+  - `ordersummary_source_path`: s3://adif-sdlc/curated/sdlc_wizard/ordersummary/
+  - `customeraggregatespend_target_path`: s3://adif-sdlc/analytics/customeraggregatespend/
+  - `customeraggregatespend_table_name`: customeraggregatespend
+  - `customeraggregatespend_database`: gen_ai_poc_databrickscoe
+  - `aggregation_write_mode`: Not specified in FRD (overwrite or append)
+  - `target_format`: Not specified in FRD
+- **Operational Notes**:
+  - Ensure IAM role has s3:GetObject permission on ordersummary location
+  - Ensure IAM role has s3:PutObject permission on customeraggregatespend location
+  - Monitor CloudWatch for aggregation performance
+  - Consider partitioning by Date for query performance (not specified in FRD)
+  - Write mode (overwrite vs append) not specified in FRD; implementation decision required
+  - Target file format not specified in FRD; recommend Parquet for analytics workloads
+
+---
+
+### **TR-CATALOG-003: Implement Glue Data Catalog Registration for Order Summary Table**
+- **FR Reference**: FR-CATALOG-001, FR-SCD2-001
+- **Objective**: Register ordersummary Hudi table in AWS Glue Data Catalog
+- **Source Details**: 
+  - ordersummary Hudi table: s3://adif-sdlc/curated/sdlc_wizard/ordersummary/
+- **Target Details**: 
+  - Database: gen_ai_poc_databrickscoe
+  - Table Name: ordersummary
+  - Storage Location: s3://adif-sdlc/curated/sdlc_wizard/ordersummary/
+  - Storage Format: Apache Hudi
+- **Schema**: Same as TR-SCD2-001 ordersummary schema
+- **Transformation Logic**:
+  - Register Hudi table in Glue Data Catalog
+  - Set database to: gen_ai_poc_databrickscoe
+  - Set table name to: ordersummary
+  - Configure Hudi-specific table properties for Athena querying
+  - Enable table for Athena querying with Hudi support
+- **Validation Rules**:
+  - Verify database gen_ai_poc_databrickscoe exists
+  - Verify Hudi table exists at specified S3 location
+  - Verify table schema matches expected ordersummary schema
+  - Verify table is queryable via Athena with Hudi support
+- **Error Handling**:
+  - If database does not exist: Raise exception "Database gen_ai_poc_databrickscoe not found"
+  - If Hudi table does not exist: Raise exception "Hudi table not found at s3://adif-sdlc/curated/sdlc_wizard/ordersummary/"
+  - If catalog registration fails: Log error and raise exception
+- **Runtime Parameters**:
+  - `catalog_database`: gen_ai_poc_databrickscoe
+  - `catalog_table_ordersummary`: ordersummary
+  - `ordersummary_storage_location`: s3://adif-sdlc/curated/sdlc_wizard/ordersummary/
+  - `table_format`: hudi
+- **Operational Notes**:
+  - Ensure Glue job IAM role has glue:CreateTable and glue:UpdateTable permissions
+  - Hudi tables require specific Athena configuration for querying
+  - Consider enabling Hudi metadata table for improved query performance (not specified in FRD)
+
+---
+
+### **TR-CATALOG-004: Implement Glue Data Catalog Registration for Customer Aggregate Spend Table**
+- **FR Reference**: FR-CATALOG-001, FR-AGG-001
+- **Objective**: Register customeraggregatespend table in AWS Glue Data Catalog
+- **Source Details**: 
+  - customeraggregatespend table: s3://adif-sdlc/analytics/customeraggregatespend/
+- **Target Details**: 
+  - Database: gen_ai_poc_databrickscoe
+  - Table Name: customeraggregatespend
+  - Storage Location: s3://adif-sdlc/analytics/customeraggregatespend/
+  - Storage Format: Not specified in FRD
+- **Schema**: 
+  ```
+  Name: String
+  TotalAmount: Numeric (exact type not specified in FRD)
+  Date: String (or date type)
+  ```
+- **Transformation Logic**:
+  - Register table in Glue Data Catalog
+  - Set database to: gen_ai_poc_databrickscoe
+  - Set table name to: customeraggregatespend
+  - Enable table for Athena querying
+- **Validation Rules**:
+  - Verify database gen_ai_poc_databrickscoe exists
+  - Verify table data exists at specified S3 location
+  - Verify table schema matches expected customeraggregatespend schema
+  - Verify table is queryable via Athena
+- **Error Handling**:
+  - If database does not exist: Raise exception "Database gen_ai_poc_databrickscoe not found"
+  - If table data does not exist: Raise exception "Table data not found at s3://adif-sdlc/analytics/customeraggregatespend/"
+  - If catalog registration fails: Log error and raise exception
+- **Runtime Parameters**:
+  - `catalog_database`: gen_ai_poc_databrickscoe
+  - `catalog_table_customeraggregatespend`: customeraggregatespend
+  - `customeraggregatespend_storage_location`: s3://adif-sdlc/analytics/customeraggregatespend/
+  - `table_format`: Not specified in FRD
+- **Operational Notes**:
+  - Ensure Glue job IAM role has glue:CreateTable and glue:UpdateTable permissions
+  - Storage format not specified in FRD; implementation decision required
+  - Consider partitioning strategy for query performance (not specified in FRD)
+
+---
+
+### **TR-INFRA-001: Implement AWS Infrastructure and Service Integration**
+- **FR Reference**: FR-INFRA-001
+- **Objective**: Configure and integrate AWS services for data pipeline execution, storage, cataloging, querying, and monitoring
+- **Source Details**: Not applicable (infrastructure requirement)
+- **Target Details**: Not applicable (infrastructure requirement)
+- **Schema**: Not applicable
+- **Transformation Logic**: Not applicable
+- **Validation Rules**:
+  - Verify all required AWS services are enabled in account
+  - Verify IAM roles and policies are correctly configured
+  - Verify S3 buckets exist and are accessible
+  - Verify Glue Data Catalog database exists
+  - Verify Athena workgroup is configured
+  - Verify CloudWatch log groups are created
+- **Error Handling**:
+  - If service unavailability detected: Raise exception with service name and error details
+  - If permission errors occur: Raise exception with IAM policy requirements
+  - If configuration errors detected: Raise exception with configuration details
+- **Runtime Parameters**:
+  - **S3 Configuration:**
+    - Source bucket: adif-sdlc
+    - Curated bucket: adif-sdlc (path: /curated/)
+    - Analytics bucket: adif-sdlc (path: /analytics/)
+  - **Glue Configuration:**
+    - Glue version: Not specified in FRD (recommend Glue 3.0 or later for Hudi support)
+    - Worker type: Not specified in FRD
+    - Number of workers: Not specified in FRD
+    - Job timeout: Not specified in FRD
+    - Max concurrent runs: Not specified in FRD
+  - **Catalog Configuration:**
+    - Database name: gen_ai_poc_databrickscoe
+  - **Athena Configuration:**
+    - Workgroup: Not specified in FRD
+    - Output location: Not specified in FRD
+  - **CloudWatch Configuration:**
+    - Log group: Not specified in FRD
+    - Log retention: Not specified in FRD
+  - **Lake Formation Configuration (Optional):**
+    - Governance enabled: Not specified in FRD
+- **Operational Notes**:
+  - Ensure IAM role for Glue job includes:
+    - s3:GetObject, s3:PutObject, s3:DeleteObject on all S3 paths
+    - glue:GetDatabase, glue:CreateTable, glue:UpdateTable, glue:GetTable
+    - logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents for CloudWatch
+    - athena:StartQueryExecution, athena:GetQueryResults (if Glue job queries Athena)
+  - Lake Formation is optional as specified in FRD
+  - Monitor CloudWatch for Glue job execution metrics and logs
+  - Configure CloudWatch alarms for job failures (not specified in FRD)
+  - Glue job configuration parameters (worker type, number of workers, timeout) not specified in FRD; implementation decisions required
+
+---
+
+## 3. Runtime Strategy
+
+### Authoring Language
+- **Primary Language**: PySpark (Python with Apache Spark)
+- **Rationale**: AWS Glue natively supports PySpark for ETL operations; Hudi integration is well-supported in PySpark
+- **Alternative**: Scala with Spark (if PySpark performance is insufficient, not specified in FRD)
+
+### Execution Strategy
+- **Job Type**: AWS Glue ETL Job (Spark-based)
+- **Execution Mode**: 
+  - Initial Load: Full processing of all source data
+  - Incremental Load: Process only new/changed customer records (FR-SCD2-002)
+- **Orchestration**: Not specified in FRD (consider AWS Step Functions or Glue Workflows)
+- **Scheduling**: Not specified in FRD (consider EventBridge or Glue Triggers)
+- **Job Bookmark**: Consider enabling for incremental file processing (not specified in FRD)
+
+### Glue Job Type Expectations
+- **Glue Version**: Glue 3.0 or later (for Hudi 0.10.1+ support)
+- **Job Type**: Spark ETL job
+- **Worker Type**: Not specified in FRD (recommend G.1X or G.2X based on data volume)
+- **Number of Workers**: Not specified in FRD (recommend starting with 2-5 workers, scale based on performance)
+- **Max Capacity**: Not specified in FRD
+- **Timeout**: Not specified in FRD (recommend 2880 minutes / 48 hours for large datasets)
+- **Max Concurrent Runs**: Not specified in FRD (recommend 1 for SCD2 consistency)
+- **Job Parameters**:
+  - `--enable-glue-datacatalog`: true
+  - `--enable-spark-ui`: true (for debugging)
+  - `--enable-job-insights`: true (for monitoring)
+  - `--enable-metrics`: true (for CloudWatch metrics)
+  - `--datalake-formats`: hudi (for Hudi support)
+  - Additional Hudi configuration parameters as needed
+
+---
+
+## 4. Data Design Details
+
+### Source Paths / Source Systems
+- **Customer Data Source**: 
+  - Path: `s3://adif-sdlc/sdlc_wizard/customerdata/`
+  - Format: CSV
+  - Schema: CustId, Name, EmailId, Region
+- **Order Data Source**: 
+  - Path: `s3://adif-sdlc/sdlc_wizard/orderdata/`
+  - Format: CSV
+  - Schema: OrderId, ItemName, PricePerUnit, Qty, Date, CustId
+
+### Target Paths / Target Tables
+- **Customer Table (Cleaned)**:
+  - Table Name: sdlc_wizard_customer
+  - Database: gen_ai_poc_databrickscoe
+  - Storage Location: Not specified in FRD
+  - Format: Not specified in FRD
+- **Order Table (Cleaned)**:
+  - Table Name: sdlc_wizard_order
+  - Database: gen_ai_poc_databrickscoe
+  - Storage Location: Not specified in FRD
+  - Format: Not specified in FRD
+- **Order Summary Table (SCD Type 2)**:
+  - Table Name: ordersummary
+  - Database: gen_ai_poc_databrickscoe
+  - Storage Location: `s3://adif-sdlc/curated/sdlc_wizard/ordersummary/`
+  - Format: Apache Hudi
+- **Customer Aggregate Spend Table**:
+  - Table Name: customeraggregatespend
+  - Database: gen_ai_poc_databrickscoe
+  - Storage Location: `s3://adif-sdlc/analytics/customeraggregatespend/`
+  - Format: Not specified in FRD
+
+### Catalog Registration Expectations
+- All four tables must be registered in Glue Data Catalog under database: gen_ai_poc_databrickscoe
+- Tables must be queryable via Amazon Athena
+- Hudi table (ordersummary) requires Hudi-specific catalog properties for Athena querying
+- Catalog registration should occur after data write completes successfully
+
+### Partitioning Expectations
+- Not specified in FRD
+- Recommendation: Consider partitioning ordersummary by Date for query performance
+- Recommendation: Consider partitioning customeraggregatespend by Date for query performance
+
+### File Formats / Table Formats
+- **Source Files**: CSV with header row
+- **ordersummary Table**: Apache Hudi (COW or MOR type not specified in FRD)
+- **Other Tables**: Not specified in FRD (recommend Parquet for analytics tables)
+
+### Update / Overwrite / Append Behavior
+- **Customer and Order Tables**: 
+  - Behavior not specified in FRD
+  - Recommendation: Overwrite mode for cleaned tables (full refresh)
+- **ordersummary Table**: 
+  - Hudi upsert mode for SCD Type 2 updates
+  - Maintains historical records with versioning
+- **customeraggregatespend Table**: 
+  - Behavior not specified in FRD
+  - Recommendation: Overwrite mode (full refresh from active ordersummary records)
+
+### Important Notes
+- **No staging tables, intermediate layers, or derived sources are introduced beyond what is specified in FRD**
+- All source paths reference original source locations from FRD
+- In-memory DataFrames are used for intermediate processing steps
+- Storage locations for sdlc_wizard_customer and sdlc_wizard_order tables not specified in FRD; implementation decisions required
+
+---
+
+## 5. Processing Details
+
+### Data Quality Rules
+- **Null Removal**:
+  - Remove records where any column contains string value "Null" (case-sensitive)
+  - Remove records where any column contains actual NULL value
+  - Apply to both customer and order datasets independently
+- **Validation**:
+  - Verify CSV files contain expected header columns
+  - Verify source paths are accessible
+  - Verify data types are compatible with downstream processing
+  - Log data quality metrics to CloudWatch
+
+### Deduplication Rules
+- **Customer Dataset**:
+  - Remove duplicate records based on exact match across all columns: CustId, Name, EmailId, Region
+  - Retain first occurrence of duplicate record (Spark default behavior)
+- **Order Dataset**:
+  - Remove duplicate records based on exact match across all columns: OrderId, ItemName, PricePerUnit, Qty, Date, CustId
+  - Retain first occurrence of duplicate record (Spark default behavior)
+- **Processing**:
+  - Apply deduplication after null removal
+  - Process each dataset independently
+  - Log duplicate count metrics to CloudWatch
+
+### Join Rules
+- **Customer-Order Join for Order Summary**:
+  - Join Type: Inner join
+  - Join Key: CustId
+  - Join Logic: `customer_df.join(order_df, "CustId", "inner")`
+  - Result: Combined dataset with all customer and order columns
+  - Orphaned Records: Order records without matching customer CustId will be excluded (inner join behavior)
+
+### Aggregation Rules
+- **Customer Aggregate Spend**:
+  - Source: ordersummary table (IsActive = true records only)
+  - Calculation: TotalAmount = PricePerUnit * Qty
+  - Grouping: Group by Name and Date
+  - Aggregation: Sum of TotalAmount for each Name-Date combination
+  - Output Schema: Name, TotalAmount, Date
+
+### SCD / History Tracking Rules
+- **SCD Type 2 Implementation for ordersummary**:
+  - **New Records**:
+    - IsActive = true
+    - StartDate = current timestamp
+    - EndDate = null
+    - OpTs = current timestamp
+  - **Changed Records**:
+    - Close previous row: IsActive = false, EndDate = current timestamp, OpTs = current timestamp
+    - Insert new row: IsActive = true, StartDate = current timestamp, EndDate = null, OpTs = current timestamp
+  - **Unchanged Records**: No action
+  - **Change Detection**: Compare all business columns (Name, EmailId, Region, OrderId, ItemName, PricePerUnit, Qty, Date) between new and existing active records
+  - **Incremental Updates**: Triggered by customer updates (Name, EmailId, or Region changes)
+
+### Null Handling
+- **Ingestion Stage**: 
+  - Read CSV files with null values as-is
+  - String "Null" and actual NULL values preserved during ingestion
+- **Cleaning Stage**: 
+  - Remove records containing string "Null" (case-sensitive)
+  - Remove records containing actual NULL values
+  - Apply to all columns in both datasets
+- **Processing Stage**: 
+  - After cleaning, no null values should exist in datasets
+  - Downstream processing assumes no null values
+- **SCD2 Stage**: 
+  - EndDate is null for active records (IsActive = true)
+  - EndDate is not null for closed records (IsActive = false)
+
+### Type Casting Expectations
+- **CSV Ingestion**: 
+  - All fields read as String type initially (CSV default behavior)
+- **Numeric Calculations**: 
+  - PricePerUnit: Cast to numeric type (Double or Decimal) for TotalAmount calculation
+  - Qty: Cast to numeric type (Integer or Long) for TotalAmount calculation
+- **Date Fields**: 
+  - Date: Cast to date or timestamp type for proper date handling (format not specified in FRD)
+  - StartDate, EndDate, OpTs: Use timestamp type for SCD2 metadata
+- **Boolean Fields**: 
+  - IsActive: Boolean type for SCD2 flag
+- **Type Casting Logic**: 
+  - Apply type casting after data cleaning and before calculations
+  - Handle type casting errors gracefully (log and exclude invalid records)
+
+---
+
+## 6. ETL Mapping Requirements
+
+### 6.1 Customer Data Source to Cleaned Customer DataFrame
+
+| Column Name | Type | Nullable | Source Field | Transformation |
+|-------------|------|----------|--------------|----------------|
+| CustId | String | No (after cleaning) | s3://adif-sdlc/sdlc_wizard/customerdata/ → CustId | Direct map; remove records with "Null" or NULL; remove duplicates |
+| Name | String | No (after cleaning) | s3://adif-sdlc/sdlc_wizard/customerdata/ → Name | Direct map; remove records with "Null" or NULL; remove duplicates |
+| EmailId | String | No (after cleaning) | s3://adif-sdlc/sdlc_wizard/customerdata/ → EmailId | Direct map; remove records with "Null" or NULL; remove duplicates |
+| Region | String | No (after cleaning) | s3://adif-sdlc/sdlc_wizard/customerdata/ → Region | Direct map; remove records with "Null" or NULL; remove duplicates |
+
+### 6.2 Order Data Source to Cleaned Order DataFrame
+
+| Column Name | Type | Nullable | Source Field | Transformation |
+|-------------|------|----------|--------------|----------------|
+| OrderId | String | No (after cleaning) | s3://adif-sdlc/sdlc_wizard/orderdata/ → OrderId | Direct map; remove records with "Null" or NULL; remove duplicates |
+| ItemName | String | No (after cleaning) | s3://adif-sdlc/sdlc_wizard/orderdata/ → ItemName | Direct map; remove records with "Null" or NULL; remove duplicates |
+| PricePerUnit | String (ingestion) / Numeric (processing) | No (after cleaning) | s3://adif-sdlc/sdlc_wizard/orderdata/ → PricePerUnit | Direct map; remove records with "Null" or NULL; remove duplicates; cast to numeric for calculations |
+| Qty | String (ingestion) / Numeric (processing) | No (after cleaning) | s3://adif-sdlc/sdlc_wizard/orderdata/ → Qty | Direct map; remove records with "Null" or NULL; remove duplicates; cast to numeric for calculations |
+| Date | String (ingestion) / Date (processing) | No (after cleaning) | s3://adif-sdlc/sdlc_wizard/orderdata/ → Date | Direct map; remove records with "Null" or NULL; remove duplicates; cast to date type |
+| CustId | String | No (after cleaning) | s3://adif-sdlc/sdlc_wizard/orderdata/ → CustId | Direct map; remove records with "Null" or NULL; remove duplicates |
+
+### 6.3 Cleaned Customer and Order DataFrames to ordersummary Table (SCD Type 2)
+
+| Column Name | Type | Nullable | Source Field | Transformation |
+|-------------|------|----------|--------------|----------------|
+| OrderId | String | No | Cleaned Order DataFrame → OrderId | Direct map from order dataset |
+| ItemName | String | No | Cleaned Order DataFrame → ItemName | Direct map from order dataset |
+| PricePerUnit | Numeric | No | Cleaned Order DataFrame → PricePerUnit | Direct map from order dataset; cast to numeric |
+| Qty | Numeric | No | Cleaned Order DataFrame → Qty | Direct map from order dataset; cast to numeric |
+| Date | Date | No | Cleaned Order DataFrame → Date | Direct map from order dataset; cast to date type |
+| CustId | String | No | Cleaned Customer DataFrame → CustId (join key) / Cleaned Order DataFrame → CustId | Direct map from joined datasets |
+| Name | String | No | Cleaned Customer DataFrame → Name | Direct map from customer dataset via join on CustId |
+| EmailId | String | No | Cleaned Customer DataFrame → EmailId | Direct map from customer dataset via join on CustId |
+| Region | String | No | Cleaned Customer DataFrame → Region | Direct map from customer dataset via join on CustId |
+| IsActive | Boolean | No | Generated | SCD2 metadata: true for active records, false for closed records |
+| StartDate | Timestamp | No | Generated | SCD2 metadata: current timestamp when record becomes active |
+| EndDate | Timestamp | Yes | Generated | SCD2 metadata: null for active records, current timestamp when record is closed |
+| OpTs | Timestamp | No | Generated | SCD2 metadata: current timestamp for operation tracking |
+
+**Join Logic**: Inner join between Cleaned Customer DataFrame and Cleaned Order DataFrame on CustId
+
+**SCD2 Logic**:
+- New records: IsActive=true, StartDate=current_timestamp, EndDate=null, OpTs=current_timestamp
+- Changed records: Close old (IsActive=false, EndDate=current_timestamp, OpTs=current_timestamp), Insert new (IsActive=true, StartDate=current_timestamp, EndDate=null, OpTs=current_timestamp)
+- Unchanged records: No action
+
+### 6.4 ordersummary Table to customeraggregatespend Table
+
+| Column Name | Type | Nullable | Source Field | Transformation |
+|-------------|------|----------|--------------|----------------|
+| Name | String | No | ordersummary → Name (where IsActive=true) | Direct map from ordersummary active records |
+| TotalAmount | Numeric | No | ordersummary → PricePerUnit * Qty (where IsActive=true) | Calculated: PricePerUnit * Qty, then sum grouped by Name and Date |
+| Date | Date | No | ordersummary → Date (where IsActive=true) | Direct map from ordersummary active records |
+
+**Aggregation Logic**: 
+- Filter ordersummary for IsActive = true
+- Calculate TotalAmount = PricePerUnit * Qty for each record
+- Group by Name and Date
+- Sum TotalAmount for each Name-Date combination
+
+### 6.5 Cleaned Customer DataFrame to sdlc_wizard_customer Table
+
+| Column Name | Type | Nullable | Source Field | Transformation |
+|-------------|------|----------|--------------|----------------|
+| CustId | String | No | Cleaned Customer DataFrame → CustId | Direct map |
+| Name | String | No | Cleaned Customer DataFrame → Name | Direct map |
+| EmailId | String | No | Cleaned Customer DataFrame → EmailId | Direct map |
+| Region | String | No | Cleaned Customer DataFrame → Region | Direct map |
+
+**Note**: Storage location and format not specified in FRD
+
+### 6.6 Cleaned Order DataFrame to sdlc_wizard_order Table
+
+| Column Name | Type | Nullable | Source Field | Transformation |
+|-------------|------|----------|--------------|----------------|
+| OrderId | String | No | Cleaned Order DataFrame → OrderId | Direct map |
+| ItemName | String | No | Cleaned Order DataFrame → ItemName | Direct map |
+| PricePerUnit | Numeric | No | Cleaned Order DataFrame → PricePerUnit | Direct map; cast to numeric |
+| Qty | Numeric | No | Cleaned Order DataFrame → Qty | Direct map; cast to numeric |
+| Date | Date | No | Cleaned Order DataFrame → Date | Direct map; cast to date type |
+| CustId | String | No | Cleaned Order DataFrame → CustId | Direct map |
+
+**Note**: Storage location and format not specified in FRD
+
+---
+
+## 7. Traceability Matrix
+
+| TR ID | FR ID | Description |
+|-------|-------|-------------|
+| TR-INGEST-001 | FR-INGEST-001 | Technical implementation of customer CSV ingestion from s3://adif-sdlc/sdlc_wizard/customerdata/ into Spark DataFrame |
+| TR-INGEST-002 | FR-INGEST-002 | Technical implementation of order CSV ingestion from s3://adif-sdlc/sdlc_wizard/orderdata/ into Spark DataFrame |
+| TR-CLEAN-001 | FR-CLEAN-001 | Technical implementation of null value removal (string "Null" and actual NULL) from customer and order DataFrames |
+| TR-CLEAN-002 | FR-CLEAN-002 | Technical implementation of deduplication logic for customer and order DataFrames using Spark dropDuplicates() |
+| TR-CATALOG-001 | FR-CATALOG-001 | Technical implementation of Glue Data Catalog registration for sdlc_wizard_customer table |
+| TR-CATALOG-002 | FR-CATALOG-001 | Technical implementation of Glue Data Catalog registration for sdlc_wizard_order table |
+| TR-CATALOG-003 | FR-CATALOG-001, FR-SCD2-001 | Technical implementation of Glue Data Catalog registration for ordersummary Hudi table |
+| TR-CATALOG-004 | FR-CATALOG-001, FR-AGG-001 | Technical implementation of Glue Data Catalog registration for customeraggregatespend table |
+| TR-SCD2-001 | FR-SCD2-001 | Technical implementation of SCD Type 2 logic for ordersummary table using Apache Hudi with IsActive, StartDate, EndDate, OpTs columns |
+| TR-SCD2-002 | FR-SCD2-002 | Technical implementation of incremental customer update detection and SCD Type 2 propagation to ordersummary table |
+| TR-AGG-001 | FR-AGG-001 | Technical implementation of customer aggregate spend calculation and table generation with Name, TotalAmount, Date columns |
+| TR-INFRA-001 | FR-INFRA-001 | Technical implementation of AWS infrastructure integration including S3, Glue, Catalog, Athena, CloudWatch, and optional Lake Formation |
+
+### Source to Technical Source Mapping
+
+| Original Source (FRD) | Technical Source (TRD) | Notes |
+|----------------------|------------------------|-------|
+| s3://adif-sdlc/sdlc_wizard/customerdata/ | s3://adif-sdlc/sdlc_wizard/customerdata/ | Direct mapping; no intermediate sources introduced |
+| s3://adif-sdlc/sdlc_wizard/orderdata/ | s3://adif-sdlc/sdlc_wizard/orderdata/ | Direct mapping; no intermediate sources introduced |
+| Existing ordersummary table | s3://adif-sdlc/curated/sdlc_wizard/ordersummary/ | Direct mapping to Hudi table location |
+| ordersummary table (active records) | s3://adif-sdlc/curated/sdlc_wizard/ordersummary/ (filtered for IsActive=true) | Direct mapping with filter applied |
+
+---
+
+## 8. Assumptions and Implementation Notes
+
+### Assumptions
+1. **Data Types**: Exact data types not specified in FRD; String type assumed for CSV ingestion with casting applied for numeric and date calculations
+2. **Date Format**: Date field format not specified in FRD; assume ISO 8601 or common date format compatible with Spark date parsing
+3. **Hudi Configuration**: Hudi table type (COW vs MOR), record key, precombine key, and partition key not specified in FRD; implementation decisions required
+4. **Storage Locations**: Storage locations for sdlc_wizard_customer and sdlc_wizard_order tables not specified in FRD; implementation decisions required
+5. **Storage Formats**: File formats for sdlc_wizard_customer, sdlc_wizard_order, and customeraggregatespend tables not specified in FRD; Parquet recommended for analytics workloads
+6. **Write Modes**: Overwrite vs append behavior not specified in FRD for most tables; recommendations provided in TRD
+7. **Partitioning**: Partitioning strategies not specified in FRD; recommendations provided for query performance optimization
+8. **Glue Job Configuration**: Worker type, number of workers, timeout, and other Glue job parameters not specified in FRD; recommendations provided
+9. **Customer Change Detection**: Mechanism for detecting customer changes not specified in FRD; implementation decision required (e.g., CDC, timestamp comparison, full comparison)
+10. **Orchestration and Scheduling**: Job orchestration and scheduling not specified in FRD; consider AWS Step Functions or Glue Workflows
+11. **Performance Requirements**: Performance, scalability, and availability requirements not specified in FRD
+12. **Error Notification**: Error notification mechanisms not specified in FRD; consider SNS or CloudWatch alarms
+
+### Implementation Notes
+1. **Source Fidelity**: All source references in TRD match exactly with FRD specifications; no intermediate sources or staging tables introduced
+2. **In-Memory Processing**: Intermediate DataFrames (cleaned, deduplicated) are in-memory Spark objects, not persisted to storage unless explicitly specified
+3. **Hudi Integration**: AWS Glue 3.0 or later required for Hudi 0.10.1+ support; ensure Glue job includes `--datalake-formats hudi` parameter
+4. **IAM Permissions**: Comprehensive IAM permissions required for S3 read/write, Glue catalog operations, and CloudWatch logging
+5. **Monitoring**: CloudWatch monitoring specified in FRD; implement comprehensive logging and metrics for all ETL operations
+6. **Data Quality**: Implement data quality metrics and logging for null removal, deduplication, and validation operations
+7. **Incremental Processing**: Consider Glue job bookmarks for incremental file processing; customer change detection mechanism requires implementation decision
+8. **Athena Querying**: Ensure Hudi tables are properly configured for Athena querying with Hudi-specific catalog properties
+9. **ACID Compliance**: Hudi provides ACID guarantees for ordersummary table; ensure proper Hudi configuration for consistency
+10. **Testing**: Implement comprehensive testing for SCD Type 2 logic, aggregation calculations, and data quality operations
+
+---
+
+**Document Version**: 1.0  
+**Date**: 2024  
+**Prepared By**: Senior AWS Data Architect  
+**Status**: Ready for Implementation
+
+---
+
+## Additional Notes
+
+### Information Not Specified in FRD
+
+The following details were not specified in the FRD and require implementation decisions:
+
+1. **Schema Details**:
+   - Exact data types for all columns (String type assumed for CSV ingestion)
+   - Date field format for Date, StartDate, EndDate, OpTs columns
+   - Numeric precision for PricePerUnit, Qty, TotalAmount columns
+
+2. **Storage Details**:
+   - Storage location for sdlc_wizard_customer table
+   - Storage location for sdlc_wizard_order table
+   - File format for sdlc_wizard_customer table
+   - File format for sdlc_wizard_order table
+   - File format for customeraggregatespend table
+
+3. **Hudi Configuration**:
+   - Hudi table type (Copy-On-Write vs Merge-On-Read)
+   - Hudi record key field(s)
+   - Hudi precombine key field
+   - Hudi partition key field(s)
+
+4. **Write Behavior**:
+   - Overwrite vs append mode for sdlc_wizard_customer table
+   - Overwrite vs append mode for sdlc_wizard_order table
+   - Overwrite vs append mode for customeraggregatespend table
+
+5. **Partitioning**:
+   - Partitioning strategy for all tables
+
+6. **Glue Job Configuration**:
+   - Glue version (recommended 3.0+)
+   - Worker type (G.1X, G.2X, etc.)
+   - Number of workers
+   - Job timeout
+   - Max concurrent runs
+
+7. **Incremental Processing**:
+   - Customer change detection mechanism
+   - Glue job bookmark configuration
+
+8. **Orchestration**:
+   - Job scheduling mechanism
+   - Job orchestration workflow
+   - Dependency management
+
+9. **Monitoring**:
+   - CloudWatch log group name
+   - CloudWatch log retention period
+   - CloudWatch alarm configuration
+
+10. **Performance**:
+    - Performance requirements
+    - Scalability requirements
+    - Availability requirements
+
+11. **Athena Configuration**:
+    - Athena workgroup
+    - Athena query output location
+
+These implementation decisions should be made based on specific project requirements, data volumes, performance needs, and organizational standards.
